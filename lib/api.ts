@@ -194,8 +194,6 @@ export async function analyzeImages(
   }
 }
 
-// Add this to your existing lib/api.ts
-
 /**
  * Save a meal to the database
  */
@@ -222,9 +220,6 @@ export async function saveMeal(
         description: mealData.description,
         totalNutrition: mealData.totalNutrition,
         dishes: mealData.dishes,
-      },
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
       },
     });
 

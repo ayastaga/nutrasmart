@@ -11,9 +11,12 @@ import {
   RefreshControl,
   Animated,
   useColorScheme,
+  Alert,
+  TextInput,
 } from "react-native";
-import { supabase } from "../../lib/supabase.web"; // Adjust path to your supabase client
+import { supabase } from "../../lib/supabase.web";
 import { useAuthContext } from "@/hooks/use-auth-context";
+import { useTimezoneStore, COMMON_TIMEZONES } from "@/hooks/use-timezone";
 import {
   format,
   subDays,
@@ -39,9 +42,12 @@ import {
   X,
   CalendarDays,
   ChevronDown,
+  Globe,
 } from "lucide-react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar as RNCalendar } from "react-native-calendars";
+import { Edit2, Trash2, Save, Camera } from "lucide-react-native";
+import * as ImagePicker from "expo-image-picker";
 
 interface NutritionSummary {
   date?: string;
@@ -132,7 +138,14 @@ export default function ProfileScreen() {
   const { session } = useAuthContext();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
-  const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const {
+    timezone: storedTimezone,
+    isAutoDetect,
+    getCurrentTimezone,
+    setTimezone,
+    resetToAuto,
+  } = useTimezoneStore();
+  const userTimezone = getCurrentTimezone();
   const screenWidth = Dimensions.get("window").width;
 
   const [period, setPeriod] = useState<
@@ -154,6 +167,54 @@ export default function ProfileScreen() {
     start?: string;
     end?: string;
   }>({});
+  const [showTimezonePicker, setShowTimezonePicker] = useState(false);
+
+  const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
+  const [editForm, setEditForm] = useState({
+    meal_name: "",
+    meal_type: "",
+    description: "",
+    total_calories: "",
+    total_protein: "",
+    total_carbs: "",
+    total_fat: "",
+    total_fiber: "",
+    total_sodium: "",
+  });
+  const [isSaving, setIsSaving] = useState(false);
+
+  const convertUTCToLocal = (utcDateString: string) => {
+    const date = new Date(utcDateString);
+    return date.toLocaleDateString("en-CA", {
+      timeZone: userTimezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  };
+
+  const formatDateTimeLocal = (utcDateString: string, formatStr: string) => {
+    const date = new Date(utcDateString);
+
+    // Get local date components
+    const localDate = new Date(
+      date.toLocaleString("en-US", { timeZone: userTimezone }),
+    );
+
+    // Simple formatting
+    if (formatStr === "MMM dd, HH:mm") {
+      const month = localDate.toLocaleString("en-US", {
+        month: "short",
+        timeZone: userTimezone,
+      });
+      const day = localDate.getDate();
+      const hours = localDate.getHours().toString().padStart(2, "0");
+      const minutes = localDate.getMinutes().toString().padStart(2, "0");
+      return `${month} ${day}, ${hours}:${minutes}`;
+    }
+
+    return format(localDate, formatStr);
+  };
 
   const quickRanges = [
     { label: "Last 7 days", from: subDays(new Date(), 6) }, // 7 days total
@@ -235,14 +296,9 @@ export default function ProfileScreen() {
           });
         });
 
+        // UPDATED: Convert UTC to local timezone
         mealsData?.forEach((meal) => {
-          const mealDate = new Date(meal.logged_at);
-          const localDateStr = mealDate.toLocaleDateString("en-CA", {
-            timeZone: userTimezone,
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-          });
+          const localDateStr = convertUTCToLocal(meal.logged_at);
 
           if (localDateStr >= startDate && localDateStr <= endDate) {
             if (!dailyMap.has(localDateStr)) {
@@ -302,33 +358,196 @@ export default function ProfileScreen() {
     }
   };
 
+  // Watch for timezone changes
+  useEffect(() => {
+    if (session?.user) {
+      console.log("🌍 Timezone changed to:", userTimezone);
+      fetchNutritionSummary();
+      fetchMeals();
+    }
+  }, [userTimezone]);
+
+  const renderTimezoneModal = () => {
+    const currentSystemTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const groupedTimezones = COMMON_TIMEZONES.reduce(
+      (acc, tz) => {
+        if (!acc[tz.region]) acc[tz.region] = [];
+        acc[tz.region].push(tz);
+        return acc;
+      },
+      {} as Record<string, typeof COMMON_TIMEZONES>,
+    );
+
+    return (
+      <Modal
+        visible={showTimezonePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowTimezonePicker(false)}
+      >
+        <View
+          className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
+        >
+          <View
+            className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[80%]`}
+          >
+            <View className="flex-row items-center justify-between mb-4">
+              <Text
+                className={`text-xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+              >
+                Select Timezone
+              </Text>
+              <TouchableOpacity onPress={() => setShowTimezonePicker(false)}>
+                <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
+              </TouchableOpacity>
+            </View>
+
+            {isAutoDetect && (
+              <View
+                className={`mb-4 p-3 rounded-lg ${isDark ? "bg-green-900/30" : "bg-green-100"}`}
+              >
+                <Text
+                  className={`text-sm font-medium ${isDark ? "text-green-400" : "text-green-700"}`}
+                >
+                  🌍 Auto-detecting: {currentSystemTz}
+                </Text>
+                <Text
+                  className={`text-xs mt-1 ${isDark ? "text-green-300" : "text-green-600"}`}
+                >
+                  Your timezone is automatically detected from your device
+                </Text>
+              </View>
+            )}
+
+            <ScrollView showsVerticalScrollIndicator={false} className="mb-4">
+              {Object.entries(groupedTimezones).map(([region, timezones]) => (
+                <View key={region} className="mb-4">
+                  <Text
+                    className={`text-xs font-bold mb-2 ${isDark ? "text-gray-500" : "text-gray-400"} uppercase`}
+                  >
+                    {region}
+                  </Text>
+                  {timezones.map((tz) => {
+                    const isSelected =
+                      (tz.value === "auto" && isAutoDetect) ||
+                      (tz.value === storedTimezone && !isAutoDetect);
+
+                    return (
+                      <TouchableOpacity
+                        key={tz.value}
+                        onPress={() => {
+                          if (tz.value === "auto") {
+                            resetToAuto();
+                          } else {
+                            setTimezone(tz.value);
+                          }
+                          setShowTimezonePicker(false);
+                        }}
+                        className={`p-4 rounded-lg mb-2 ${
+                          isSelected
+                            ? isDark
+                              ? "bg-green-900/30"
+                              : "bg-green-100"
+                            : isDark
+                              ? "bg-gray-800"
+                              : "bg-gray-100"
+                        }`}
+                      >
+                        <View className="flex-row items-center justify-between">
+                          <View className="flex-1">
+                            <Text
+                              className={`font-medium ${
+                                isSelected
+                                  ? isDark
+                                    ? "text-green-400"
+                                    : "text-green-700"
+                                  : isDark
+                                    ? "text-white"
+                                    : "text-gray-900"
+                              }`}
+                            >
+                              {tz.label}
+                            </Text>
+                            {tz.value !== "auto" && (
+                              <Text
+                                className={`text-xs mt-1 ${isDark ? "text-gray-400" : "text-gray-600"}`}
+                              >
+                                {tz.value}
+                              </Text>
+                            )}
+                          </View>
+                          {isSelected && (
+                            <View className="w-5 h-5 rounded-full bg-green-600 items-center justify-center">
+                              <Text className="text-white text-xs">✓</Text>
+                            </View>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  // Fixed fetchMeals function - replace in your ProfileScreen
+
   const fetchMeals = async () => {
-    if (!session?.user) return;
+    if (!session?.user) {
+      console.log("❌ No session, skipping fetchMeals");
+      return;
+    }
 
     try {
       const startDate = format(startOfDay(dateRange.from), "yyyy-MM-dd");
       const endDate = format(startOfDay(dateRange.to), "yyyy-MM-dd");
 
-      console.log("🍽️ Fetching meals:", { startDate, endDate });
+      console.log("🍽️ Fetching meals with params:", {
+        startDate,
+        endDate,
+        userId: session.user.id,
+        timezone: userTimezone,
+      });
 
+      // Fetch ALL meals, then filter client-side for accurate timezone handling
       const { data, error } = await supabase
         .from("meals")
         .select("*, meal_dishes(*)")
         .eq("user_id", session.user.id)
-        .gte("logged_at", `${startDate}T00:00:00.000Z`)
-        .lte("logged_at", `${endDate}T23:59:59.999Z`)
-        .order("logged_at", { ascending: false })
-        .limit(100);
+        .order("logged_at", { ascending: false });
 
       if (error) {
         console.error("❌ Error fetching meals:", error);
         throw error;
       }
 
-      console.log("✅ Fetched meals:", data?.length);
-      setMeals(data || []);
+      console.log("📊 Total meals in database:", data?.length);
+
+      // Filter by date range using user's timezone
+      const filteredMeals =
+        data?.filter((meal) => {
+          const localDateStr = convertUTCToLocal(meal.logged_at);
+          const isInRange =
+            localDateStr >= startDate && localDateStr <= endDate;
+
+          if (!isInRange) {
+            console.log(
+              `📍 Meal "${meal.meal_name}" at ${localDateStr} is outside range ${startDate} to ${endDate}`,
+            );
+          }
+
+          return isInRange;
+        }) || [];
+
+      console.log("✅ Filtered meals count:", filteredMeals.length);
+      setMeals(filteredMeals);
     } catch (error) {
-      console.error("Error fetching meals:", error);
+      console.error("❌ Error fetching meals:", error);
+      setMeals([]);
     }
   };
 
@@ -364,6 +583,148 @@ export default function ProfileScreen() {
         daysLogged: 0,
       },
     );
+  };
+
+  const openEditModal = (meal: Meal) => {
+    setEditingMeal(meal);
+    setEditForm({
+      meal_name: meal.meal_name,
+      meal_type: meal.meal_type,
+      description: meal.description || "",
+      total_calories: meal.total_calories.toString(),
+      total_protein: meal.total_protein.toString(),
+      total_carbs: meal.total_carbs.toString(),
+      total_fat: meal.total_fat.toString(),
+      total_fiber: (meal.total_fiber || 0).toString(),
+      total_sodium: (meal.total_sodium || 0).toString(),
+    });
+  };
+
+  const closeEditModal = () => {
+    setEditingMeal(null);
+    setEditForm({
+      meal_name: "",
+      meal_type: "",
+      description: "",
+      total_calories: "",
+      total_protein: "",
+      total_carbs: "",
+      total_fat: "",
+      total_fiber: "",
+      total_sodium: "",
+    });
+  };
+
+  const handleSaveMeal = async () => {
+    if (!editingMeal) return;
+
+    setIsSaving(true);
+    try {
+      const { error } = await supabase
+        .from("meals")
+        .update({
+          meal_name: editForm.meal_name,
+          meal_type: editForm.meal_type,
+          description: editForm.description,
+          total_calories: parseFloat(editForm.total_calories) || 0,
+          total_protein: parseFloat(editForm.total_protein) || 0,
+          total_carbs: parseFloat(editForm.total_carbs) || 0,
+          total_fat: parseFloat(editForm.total_fat) || 0,
+          total_fiber: parseFloat(editForm.total_fiber) || 0,
+          total_sodium: parseFloat(editForm.total_sodium) || 0,
+        })
+        .eq("id", editingMeal.id);
+
+      if (error) throw error;
+
+      Alert.alert("Success", "Meal updated successfully!");
+      closeEditModal();
+      fetchMeals();
+      fetchNutritionSummary();
+    } catch (error) {
+      console.error("Error updating meal:", error);
+      Alert.alert("Error", "Failed to update meal");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteMeal = async () => {
+    if (!editingMeal) return;
+
+    Alert.alert("Delete Meal", "Are you sure you want to delete this meal?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            console.log("🗑️ Deleting meal via edge function:", editingMeal.id);
+
+            // Get the session (includes access_token)
+            const {
+              data: { session },
+              error: sessionError,
+            } = await supabase.auth.getSession();
+
+            if (sessionError || !session) {
+              throw new Error("Not authenticated");
+            }
+
+            console.log("📝 Token exists:", !!session.access_token);
+
+            // Include the JWT in the Authorization header
+            const { data, error } = await supabase.functions.invoke(
+              "delete-meal",
+              {
+                body: { mealId: editingMeal.id },
+                headers: {
+                  Authorization: `Bearer ${session.access_token}`,
+                },
+              },
+            );
+
+            console.log("📡 Response:", { data, error });
+
+            if (error) throw error;
+            if (!data?.success) throw new Error(data?.error || "Delete failed");
+
+            Alert.alert("Success", "Meal deleted successfully!");
+            closeEditModal();
+
+            await Promise.all([fetchMeals(), fetchNutritionSummary()]);
+          } catch (error: any) {
+            console.error("❌ Error:", error);
+            Alert.alert(
+              "Error",
+              `Failed to delete: ${error.message || "Unknown error"}`,
+            );
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleChangeImage = async () => {
+    if (!editingMeal) return;
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Camera roll permission is required");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      // You would need to implement image upload here
+      Alert.alert("Note", "Image upload functionality needs to be implemented");
+    }
   };
 
   const stats = getTotalStats();
@@ -672,6 +1033,279 @@ export default function ProfileScreen() {
     </Modal>
   );
 
+  const renderEditMealModal = () => (
+    <Modal
+      visible={!!editingMeal}
+      transparent
+      animationType="slide"
+      onRequestClose={closeEditModal}
+    >
+      <View
+        className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
+      >
+        <View
+          className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[90%]`}
+        >
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {/* Header */}
+            <View className="flex-row items-center justify-between mb-6">
+              <Text
+                className={`text-2xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+              >
+                Edit Meal
+              </Text>
+              <TouchableOpacity onPress={closeEditModal}>
+                <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Meal Image */}
+            {editingMeal?.image_url && (
+              <View className="mb-6">
+                <Image
+                  source={{ uri: editingMeal.image_url }}
+                  className="w-full h-48 rounded-xl"
+                  resizeMode="cover"
+                />
+                <TouchableOpacity
+                  onPress={handleChangeImage}
+                  className="absolute bottom-3 right-3 bg-green-600 rounded-full p-3"
+                >
+                  <Camera size={20} color="white" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Meal Name */}
+            <View className="mb-4">
+              <Text
+                className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              >
+                Meal Name
+              </Text>
+              <TextInput
+                value={editForm.meal_name}
+                onChangeText={(text) =>
+                  setEditForm({ ...editForm, meal_name: text })
+                }
+                className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                placeholder="e.g., Breakfast Bowl"
+                placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+              />
+            </View>
+
+            {/* Meal Type */}
+            <View className="mb-4">
+              <Text
+                className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              >
+                Meal Type
+              </Text>
+              <View className="flex-row flex-wrap gap-2">
+                {["breakfast", "lunch", "dinner", "snack"].map((type) => (
+                  <TouchableOpacity
+                    key={type}
+                    onPress={() =>
+                      setEditForm({ ...editForm, meal_type: type })
+                    }
+                    className={`px-4 py-2 rounded-lg ${
+                      editForm.meal_type === type
+                        ? "bg-green-600"
+                        : isDark
+                          ? "bg-gray-800"
+                          : "bg-gray-200"
+                    }`}
+                  >
+                    <Text
+                      className={`capitalize font-medium ${
+                        editForm.meal_type === type
+                          ? "text-white"
+                          : isDark
+                            ? "text-gray-300"
+                            : "text-gray-700"
+                      }`}
+                    >
+                      {type}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {/* Description */}
+            <View className="mb-4">
+              <Text
+                className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              >
+                Description
+              </Text>
+              <TextInput
+                value={editForm.description}
+                onChangeText={(text) =>
+                  setEditForm({ ...editForm, description: text })
+                }
+                className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                placeholder="Optional description"
+                placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                multiline
+                numberOfLines={3}
+              />
+            </View>
+
+            {/* Nutrition Info */}
+            <Text
+              className={`text-lg font-bold mb-3 ${isDark ? "text-white" : "text-gray-900"}`}
+            >
+              Nutrition Information
+            </Text>
+
+            <View className="flex-row flex-wrap gap-3 mb-4">
+              <View className="flex-1 min-w-[45%]">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Calories
+                </Text>
+                <TextInput
+                  value={editForm.total_calories}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, total_calories: text })
+                  }
+                  keyboardType="numeric"
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="0"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              <View className="flex-1 min-w-[45%]">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Protein (g)
+                </Text>
+                <TextInput
+                  value={editForm.total_protein}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, total_protein: text })
+                  }
+                  keyboardType="numeric"
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="0"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              <View className="flex-1 min-w-[45%]">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Carbs (g)
+                </Text>
+                <TextInput
+                  value={editForm.total_carbs}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, total_carbs: text })
+                  }
+                  keyboardType="numeric"
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="0"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              <View className="flex-1 min-w-[45%]">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Fat (g)
+                </Text>
+                <TextInput
+                  value={editForm.total_fat}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, total_fat: text })
+                  }
+                  keyboardType="numeric"
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="0"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              <View className="flex-1 min-w-[45%]">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Fiber (g)
+                </Text>
+                <TextInput
+                  value={editForm.total_fiber}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, total_fiber: text })
+                  }
+                  keyboardType="numeric"
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="0"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              <View className="flex-1 min-w-[45%]">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Sodium (mg)
+                </Text>
+                <TextInput
+                  value={editForm.total_sodium}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, total_sodium: text })
+                  }
+                  keyboardType="numeric"
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="0"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+            </View>
+
+            {/* Action Buttons */}
+            <View className="flex-row gap-3 mt-6 mb-4">
+              <TouchableOpacity
+                onPress={handleDeleteMeal}
+                className={`flex-1 py-3 rounded-lg flex-row items-center justify-center gap-2 ${isDark ? "bg-red-900/30" : "bg-red-100"}`}
+              >
+                <Trash2 size={18} color={isDark ? "#fca5a5" : "#dc2626"} />
+                <Text
+                  className={`font-semibold ${isDark ? "text-red-400" : "text-red-600"}`}
+                >
+                  Delete
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleSaveMeal}
+                disabled={isSaving}
+                className="flex-1 bg-green-600 py-3 rounded-lg flex-row items-center justify-center gap-2"
+              >
+                {isSaving ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <>
+                    <Save size={18} color="white" />
+                    <Text className="text-white font-semibold">
+                      Save Changes
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderImageModal = () => (
     <Modal
       visible={!!selectedImage}
@@ -741,6 +1375,7 @@ export default function ProfileScreen() {
       >
         {renderImageModal()}
         {renderCalendarModal()}
+        {renderTimezoneModal()}
 
         {/* Header */}
         <AnimatedCard
@@ -756,11 +1391,21 @@ export default function ProfileScreen() {
           >
             Track your nutritional intake and progress
           </Text>
-          <Text
-            className={`text-xs ${isDark ? "text-gray-500" : "text-gray-500"} mt-1`}
+          <TouchableOpacity
+            onPress={() => setShowTimezonePicker(true)}
+            className={`mt-3 p-3 rounded-lg flex-row items-center justify-between ${isDark ? "bg-gray-800" : "bg-gray-100"}`}
           >
-            Timezone: {userTimezone}
-          </Text>
+            <View className="flex-row items-center gap-2">
+              <Globe size={16} color={isDark ? "#9ca3af" : "#6b7280"} />
+              <Text
+                className={`text-sm ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              >
+                {isAutoDetect ? "🌍 Auto: " : "📍 "}
+                {userTimezone}
+              </Text>
+            </View>
+            <ChevronDown size={16} color={isDark ? "#9ca3af" : "#6b7280"} />
+          </TouchableOpacity>
         </AnimatedCard>
 
         {/* Period Selector */}
@@ -1184,6 +1829,7 @@ export default function ProfileScreen() {
                       All Meals ({meals.length})
                     </Text>
                   </View>
+
                   {meals.length > 0 ? (
                     <View className="gap-3">
                       {meals.map((meal, index) => (
@@ -1221,6 +1867,12 @@ export default function ProfileScreen() {
                             </View>
                           )}
                           <View className="flex-1">
+                            <TouchableOpacity
+                              onPress={() => openEditModal(meal)}
+                              className="mt-2 bg-green-600 rounded-full p-2"
+                            >
+                              <Edit2 size={14} color="white" />
+                            </TouchableOpacity>
                             <Text
                               className={`font-semibold text-base ${isDark ? "text-white" : "text-gray-900"}`}
                             >
@@ -1229,8 +1881,8 @@ export default function ProfileScreen() {
                             <Text
                               className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mt-1`}
                             >
-                              {format(
-                                new Date(meal.logged_at),
+                              {formatDateTimeLocal(
+                                meal.logged_at,
                                 "MMM dd, HH:mm",
                               )}
                             </Text>
@@ -1310,6 +1962,7 @@ export default function ProfileScreen() {
           )}
         </View>
       </ScrollView>
+      {renderEditMealModal()}
     </SafeAreaView>
   );
 }
