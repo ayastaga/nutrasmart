@@ -48,6 +48,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar as RNCalendar } from "react-native-calendars";
 import { Edit2, Trash2, Save, Camera } from "lucide-react-native";
 import * as ImagePicker from "expo-image-picker";
+import { formatInTimeZone } from "date-fns-tz";
 
 interface NutritionSummary {
   date?: string;
@@ -194,26 +195,21 @@ export default function ProfileScreen() {
   };
 
   const formatDateTimeLocal = (utcDateString: string, formatStr: string) => {
-    const date = new Date(utcDateString);
+    if (!utcDateString) return "Invalid date";
 
-    // Get local date components
-    const localDate = new Date(
-      date.toLocaleString("en-US", { timeZone: userTimezone }),
-    );
+    try {
+      const date = new Date(utcDateString);
 
-    // Simple formatting
-    if (formatStr === "MMM dd, HH:mm") {
-      const month = localDate.toLocaleString("en-US", {
-        month: "short",
-        timeZone: userTimezone,
-      });
-      const day = localDate.getDate();
-      const hours = localDate.getHours().toString().padStart(2, "0");
-      const minutes = localDate.getMinutes().toString().padStart(2, "0");
-      return `${month} ${day}, ${hours}:${minutes}`;
+      if (isNaN(date.getTime())) {
+        console.error("Invalid date:", utcDateString);
+        return "Invalid date";
+      }
+
+      return formatInTimeZone(date, userTimezone, formatStr);
+    } catch (error) {
+      console.error("Date formatting error:", error, utcDateString);
+      return "Invalid date";
     }
-
-    return format(localDate, formatStr);
   };
 
   const quickRanges = [
@@ -1033,278 +1029,308 @@ export default function ProfileScreen() {
     </Modal>
   );
 
-  const renderEditMealModal = () => (
-    <Modal
-      visible={!!editingMeal}
-      transparent
-      animationType="slide"
-      onRequestClose={closeEditModal}
-    >
-      <View
-        className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
+  const renderEditMealModal = () => {
+    // Check if any changes have been made
+    const hasChanges =
+      editingMeal &&
+      (editForm.meal_name !== editingMeal.meal_name ||
+        editForm.meal_type !== editingMeal.meal_type ||
+        editForm.description !== (editingMeal.description || "") ||
+        editForm.total_calories !== editingMeal.total_calories.toString() ||
+        editForm.total_protein !== editingMeal.total_protein.toString() ||
+        editForm.total_carbs !== editingMeal.total_carbs.toString() ||
+        editForm.total_fat !== editingMeal.total_fat.toString() ||
+        editForm.total_fiber !== (editingMeal.total_fiber || 0).toString() ||
+        editForm.total_sodium !== (editingMeal.total_sodium || 0).toString());
+
+    return (
+      <Modal
+        visible={!!editingMeal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeEditModal}
       >
         <View
-          className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[90%]`}
+          className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
         >
-          <ScrollView showsVerticalScrollIndicator={false}>
-            {/* Header */}
-            <View className="flex-row items-center justify-between mb-6">
-              <Text
-                className={`text-2xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
-              >
-                Edit Meal
-              </Text>
-              <TouchableOpacity onPress={closeEditModal}>
-                <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Meal Image */}
-            {editingMeal?.image_url && (
-              <View className="mb-6">
-                <Image
-                  source={{ uri: editingMeal.image_url }}
-                  className="w-full h-48 rounded-xl"
-                  resizeMode="cover"
-                />
-                <TouchableOpacity
-                  onPress={handleChangeImage}
-                  className="absolute bottom-3 right-3 bg-green-600 rounded-full p-3"
+          <View
+            className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[90%]`}
+          >
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Header */}
+              <View className="flex-row items-center justify-between mb-6">
+                <Text
+                  className={`text-2xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
                 >
-                  <Camera size={20} color="white" />
+                  Edit Meal
+                </Text>
+                <TouchableOpacity onPress={closeEditModal}>
+                  <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
                 </TouchableOpacity>
               </View>
-            )}
 
-            {/* Meal Name */}
-            <View className="mb-4">
-              <Text
-                className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-              >
-                Meal Name
-              </Text>
-              <TextInput
-                value={editForm.meal_name}
-                onChangeText={(text) =>
-                  setEditForm({ ...editForm, meal_name: text })
-                }
-                className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                placeholder="e.g., Breakfast Bowl"
-                placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-              />
-            </View>
-
-            {/* Meal Type */}
-            <View className="mb-4">
-              <Text
-                className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-              >
-                Meal Type
-              </Text>
-              <View className="flex-row flex-wrap gap-2">
-                {["breakfast", "lunch", "dinner", "snack"].map((type) => (
+              {/* Meal Image */}
+              {editingMeal?.image_url && (
+                <View className="mb-6">
+                  <Image
+                    source={{ uri: editingMeal.image_url }}
+                    className="w-full h-48 rounded-xl"
+                    resizeMode="cover"
+                  />
                   <TouchableOpacity
-                    key={type}
-                    onPress={() =>
-                      setEditForm({ ...editForm, meal_type: type })
-                    }
-                    className={`px-4 py-2 rounded-lg ${
-                      editForm.meal_type === type
-                        ? "bg-green-600"
-                        : isDark
-                          ? "bg-gray-800"
-                          : "bg-gray-200"
-                    }`}
+                    onPress={handleChangeImage}
+                    className="absolute bottom-3 right-3 bg-green-600 rounded-full p-3"
                   >
-                    <Text
-                      className={`capitalize font-medium ${
+                    <Camera size={20} color="white" />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Meal Name */}
+              <View className="mb-4">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Meal Name
+                </Text>
+                <TextInput
+                  value={editForm.meal_name}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, meal_name: text })
+                  }
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="e.g., Breakfast Bowl"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              {/* Meal Type */}
+              <View className="mb-4">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Meal Type
+                </Text>
+                <View className="flex-row flex-wrap gap-2">
+                  {["breakfast", "lunch", "dinner", "snack"].map((type) => (
+                    <TouchableOpacity
+                      key={type}
+                      onPress={() =>
+                        setEditForm({ ...editForm, meal_type: type })
+                      }
+                      className={`px-4 py-2 rounded-lg ${
                         editForm.meal_type === type
-                          ? "text-white"
+                          ? "bg-green-600"
                           : isDark
-                            ? "text-gray-300"
-                            : "text-gray-700"
+                            ? "bg-gray-800"
+                            : "bg-gray-200"
                       }`}
                     >
-                      {type}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+                      <Text
+                        className={`capitalize font-medium ${
+                          editForm.meal_type === type
+                            ? "text-white"
+                            : isDark
+                              ? "text-gray-300"
+                              : "text-gray-700"
+                        }`}
+                      >
+                        {type}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
-            </View>
 
-            {/* Description */}
-            <View className="mb-4">
+              {/* Description */}
+              <View className="mb-4">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Description
+                </Text>
+                <TextInput
+                  value={editForm.description}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, description: text })
+                  }
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="Optional description"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  multiline
+                  numberOfLines={3}
+                />
+              </View>
+
+              {/* Nutrition Info */}
               <Text
-                className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                className={`text-lg font-bold mb-3 ${isDark ? "text-white" : "text-gray-900"}`}
               >
-                Description
+                Nutrition Information
               </Text>
-              <TextInput
-                value={editForm.description}
-                onChangeText={(text) =>
-                  setEditForm({ ...editForm, description: text })
-                }
-                className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                placeholder="Optional description"
-                placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                multiline
-                numberOfLines={3}
-              />
-            </View>
 
-            {/* Nutrition Info */}
-            <Text
-              className={`text-lg font-bold mb-3 ${isDark ? "text-white" : "text-gray-900"}`}
-            >
-              Nutrition Information
-            </Text>
+              <View className="flex-row flex-wrap gap-3 mb-4">
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Calories
+                  </Text>
+                  <TextInput
+                    value={editForm.total_calories}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_calories: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
 
-            <View className="flex-row flex-wrap gap-3 mb-4">
-              <View className="flex-1 min-w-[45%]">
-                <Text
-                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-                >
-                  Calories
-                </Text>
-                <TextInput
-                  value={editForm.total_calories}
-                  onChangeText={(text) =>
-                    setEditForm({ ...editForm, total_calories: text })
-                  }
-                  keyboardType="numeric"
-                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                  placeholder="0"
-                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                />
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Protein (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_protein}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_protein: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Carbs (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_carbs}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_carbs: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Fat (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_fat}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_fat: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Fiber (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_fiber}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_fiber: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Sodium (mg)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_sodium}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_sodium: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
               </View>
 
-              <View className="flex-1 min-w-[45%]">
-                <Text
-                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              {/* Action Buttons */}
+              <View className="flex-row gap-3 mt-6 mb-4">
+                <TouchableOpacity
+                  onPress={handleDeleteMeal}
+                  className={`flex-1 py-3 rounded-lg flex-row items-center justify-center gap-2 ${isDark ? "bg-red-900/30" : "bg-red-100"}`}
                 >
-                  Protein (g)
-                </Text>
-                <TextInput
-                  value={editForm.total_protein}
-                  onChangeText={(text) =>
-                    setEditForm({ ...editForm, total_protein: text })
-                  }
-                  keyboardType="numeric"
-                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                  placeholder="0"
-                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                />
+                  <Trash2 size={18} color={isDark ? "#fca5a5" : "#dc2626"} />
+                  <Text
+                    className={`font-semibold ${isDark ? "text-red-400" : "text-red-600"}`}
+                  >
+                    Delete
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={hasChanges ? handleSaveMeal : closeEditModal}
+                  disabled={isSaving}
+                  className={`flex-1 py-3 rounded-lg flex-row items-center justify-center gap-2 ${
+                    hasChanges
+                      ? "bg-green-600"
+                      : isDark
+                        ? "bg-gray-700"
+                        : "bg-gray-200"
+                  }`}
+                >
+                  {isSaving ? (
+                    <ActivityIndicator color="white" />
+                  ) : hasChanges ? (
+                    <>
+                      <Save size={18} color="white" />
+                      <Text className="text-white font-semibold">
+                        Save Changes
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <X size={18} color={isDark ? "#d1d5db" : "#6b7280"} />
+                      <Text
+                        className={`font-semibold ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                      >
+                        Cancel
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
-
-              <View className="flex-1 min-w-[45%]">
-                <Text
-                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-                >
-                  Carbs (g)
-                </Text>
-                <TextInput
-                  value={editForm.total_carbs}
-                  onChangeText={(text) =>
-                    setEditForm({ ...editForm, total_carbs: text })
-                  }
-                  keyboardType="numeric"
-                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                  placeholder="0"
-                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                />
-              </View>
-
-              <View className="flex-1 min-w-[45%]">
-                <Text
-                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-                >
-                  Fat (g)
-                </Text>
-                <TextInput
-                  value={editForm.total_fat}
-                  onChangeText={(text) =>
-                    setEditForm({ ...editForm, total_fat: text })
-                  }
-                  keyboardType="numeric"
-                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                  placeholder="0"
-                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                />
-              </View>
-
-              <View className="flex-1 min-w-[45%]">
-                <Text
-                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-                >
-                  Fiber (g)
-                </Text>
-                <TextInput
-                  value={editForm.total_fiber}
-                  onChangeText={(text) =>
-                    setEditForm({ ...editForm, total_fiber: text })
-                  }
-                  keyboardType="numeric"
-                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                  placeholder="0"
-                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                />
-              </View>
-
-              <View className="flex-1 min-w-[45%]">
-                <Text
-                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
-                >
-                  Sodium (mg)
-                </Text>
-                <TextInput
-                  value={editForm.total_sodium}
-                  onChangeText={(text) =>
-                    setEditForm({ ...editForm, total_sodium: text })
-                  }
-                  keyboardType="numeric"
-                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
-                  placeholder="0"
-                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
-                />
-              </View>
-            </View>
-
-            {/* Action Buttons */}
-            <View className="flex-row gap-3 mt-6 mb-4">
-              <TouchableOpacity
-                onPress={handleDeleteMeal}
-                className={`flex-1 py-3 rounded-lg flex-row items-center justify-center gap-2 ${isDark ? "bg-red-900/30" : "bg-red-100"}`}
-              >
-                <Trash2 size={18} color={isDark ? "#fca5a5" : "#dc2626"} />
-                <Text
-                  className={`font-semibold ${isDark ? "text-red-400" : "text-red-600"}`}
-                >
-                  Delete
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={handleSaveMeal}
-                disabled={isSaving}
-                className="flex-1 bg-green-600 py-3 rounded-lg flex-row items-center justify-center gap-2"
-              >
-                {isSaving ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <>
-                    <Save size={18} color="white" />
-                    <Text className="text-white font-semibold">
-                      Save Changes
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
+            </ScrollView>
+          </View>
         </View>
-      </View>
-    </Modal>
-  );
+      </Modal>
+    );
+  };
 
   const renderImageModal = () => (
     <Modal
@@ -1821,140 +1847,207 @@ export default function ProfileScreen() {
                   delay={400}
                   className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${isDark ? "" : "shadow-sm"}`}
                 >
-                  <View className="flex-row items-center gap-2 mb-4">
-                    <Utensils size={20} color="#22c55e" />
-                    <Text
-                      className={`text-lg font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                  {activeTab === "meals" && (
+                    <AnimatedCard
+                      delay={400}
+                      className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${isDark ? "" : "shadow-sm"}`}
                     >
-                      All Meals ({meals.length})
-                    </Text>
-                  </View>
-
-                  {meals.length > 0 ? (
-                    <View className="gap-3">
-                      {meals.map((meal, index) => (
-                        <AnimatedCard
-                          key={meal.id}
-                          delay={index * 30}
-                          className={`flex-row items-center gap-3 p-3 ${isDark ? "bg-gray-800" : "bg-gray-50"} rounded-lg`}
+                      <View className="flex-row items-center gap-2 mb-6">
+                        <Utensils size={20} color="#22c55e" />
+                        <Text
+                          className={`text-lg font-bold margin ${isDark ? "text-white" : "text-gray-900"}`}
                         >
-                          {meal.image_url ? (
-                            <TouchableOpacity
-                              onPress={() =>
-                                setSelectedImage({
-                                  url: meal.image_url!,
-                                  name: meal.meal_name,
-                                })
-                              }
-                              className="relative"
-                            >
-                              <Image
-                                source={{ uri: meal.image_url }}
-                                className="w-16 h-16 rounded-lg"
-                              />
-                              <View className="absolute inset-0 items-center justify-center bg-black/20 rounded-lg">
-                                <Eye size={16} color="white" />
-                              </View>
-                            </TouchableOpacity>
-                          ) : (
-                            <View
-                              className={`w-16 h-16 rounded-lg ${isDark ? "bg-gray-700" : "bg-gray-200"} items-center justify-center`}
-                            >
-                              <Utensils
-                                size={24}
-                                color={isDark ? "#6b7280" : "#9ca3af"}
-                              />
-                            </View>
-                          )}
-                          <View className="flex-1">
+                          All Meals ({meals.length})
+                        </Text>
+                      </View>
+
+                      {meals.length > 0 ? (
+                        <View className="gap-3">
+                          {meals.map((meal, index) => (
                             <TouchableOpacity
                               onPress={() => openEditModal(meal)}
-                              className="mt-2 bg-green-600 rounded-full p-2"
+                              activeOpacity={0.7}
+                              style={{ elevation: 4 }}
                             >
-                              <Edit2 size={14} color="white" />
+                              <AnimatedCard
+                                key={meal.id}
+                                delay={index * 30}
+                                className={`flex-row rounded-2xl overflow-hidden ${isDark ? "bg-gray-800/50" : "bg-white"} ${isDark ? "" : "shadow-lg shadow-gray-200/50"}`}
+                                style={{
+                                  borderWidth: 1,
+                                  borderColor: isDark ? "#1f2937" : "#f3f4f6",
+                                }}
+                              >
+                                {/* Image Section */}
+                                <View className="relative">
+                                  {meal.image_url ? (
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        setSelectedImage({
+                                          url: meal.image_url!,
+                                          name: meal.meal_name,
+                                        })
+                                      }
+                                      activeOpacity={0.9}
+                                      className="relative"
+                                    >
+                                      <Image
+                                        source={{ uri: meal.image_url }}
+                                        className="w-24 h-28"
+                                      />
+                                      <View className="absolute inset-0 items-center justify-center bg-black/30">
+                                        <View className="bg-white/20 rounded-full p-2.5">
+                                          <Eye
+                                            size={18}
+                                            color="white"
+                                            strokeWidth={2.5}
+                                          />
+                                        </View>
+                                      </View>
+                                    </TouchableOpacity>
+                                  ) : (
+                                    <View
+                                      className={`w-24 h-28 items-center justify-center ${isDark ? "bg-gray-700" : "bg-gray-100"}`}
+                                    >
+                                      <Utensils
+                                        size={28}
+                                        color={isDark ? "#4b5563" : "#d1d5db"}
+                                        strokeWidth={1.5}
+                                      />
+                                    </View>
+                                  )}
+                                </View>
+
+                                {/* Content Section */}
+                                <View className="flex-1 px-4 py-3.5 justify-between">
+                                  <View>
+                                    <Text
+                                      className={`text-base font-bold mb-1.5 ${isDark ? "text-white" : "text-gray-900"}`}
+                                      numberOfLines={1}
+                                    >
+                                      {meal.meal_name}
+                                    </Text>
+
+                                    <View className="flex-row items-center gap-2 mb-2">
+                                      <Text
+                                        className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                      >
+                                        {formatDateTimeLocal(
+                                          meal.logged_at,
+                                          "MMM dd, HH:mm",
+                                        )}
+                                      </Text>
+                                      <View
+                                        className={`w-0.5 h-3 rounded-full ${isDark ? "bg-gray-600" : "bg-gray-300"}`}
+                                      />
+                                      <View
+                                        className={`px-2.5 py-1 rounded-full ${
+                                          MEAL_TYPE_COLORS[
+                                            meal.meal_type.toLowerCase() as keyof typeof MEAL_TYPE_COLORS
+                                          ]?.[isDark ? "dark" : "light"] ||
+                                          (isDark
+                                            ? "bg-gray-700/50"
+                                            : "bg-gray-100")
+                                        }`}
+                                      >
+                                        <Text
+                                          className={`text-xs font-medium ${
+                                            MEAL_TYPE_TEXT_COLORS[
+                                              meal.meal_type.toLowerCase() as keyof typeof MEAL_TYPE_TEXT_COLORS
+                                            ]?.[isDark ? "dark" : "light"] ||
+                                            (isDark
+                                              ? "text-gray-300"
+                                              : "text-gray-800")
+                                          }`}
+                                        >
+                                          {meal.meal_type}
+                                        </Text>
+                                      </View>
+                                    </View>
+
+                                    <View className="flex-row gap-1.5">
+                                      <View
+                                        className={`flex-row items-center gap-1 px-2 py-1 rounded-full ${isDark ? "bg-gray-700/50" : "bg-gray-100"}`}
+                                      >
+                                        <Text
+                                          className={`text-[10px] font-semibold ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        >
+                                          P
+                                        </Text>
+                                        <Text
+                                          className={`text-xs font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                                        >
+                                          {Math.round(meal.total_protein)}
+                                        </Text>
+                                      </View>
+                                      <View
+                                        className={`flex-row items-center gap-1 px-2 py-1 rounded-full ${isDark ? "bg-gray-700/50" : "bg-gray-100"}`}
+                                      >
+                                        <Text
+                                          className={`text-[10px] font-semibold ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        >
+                                          C
+                                        </Text>
+                                        <Text
+                                          className={`text-xs font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                                        >
+                                          {Math.round(meal.total_carbs)}
+                                        </Text>
+                                      </View>
+                                      <View
+                                        className={`flex-row items-center gap-1 px-2 py-1 rounded-full ${isDark ? "bg-gray-700/50" : "bg-gray-100"}`}
+                                      >
+                                        <Text
+                                          className={`text-[10px] font-semibold ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        >
+                                          F
+                                        </Text>
+                                        <Text
+                                          className={`text-xs font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                                        >
+                                          {Math.round(meal.total_fat)}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  </View>
+                                </View>
+
+                                {/* Calories & Edit Column */}
+                                <View className="items-end justify-between py-3.5 pr-4">
+                                  <View className="items-end">
+                                    <Text className="text-2xl font-black text-green-500 tracking-tight">
+                                      {Math.round(meal.total_calories)}
+                                    </Text>
+                                    <Text
+                                      className={`text-[10px] font-medium uppercase tracking-wider ${isDark ? "text-gray-500" : "text-gray-400"}`}
+                                    >
+                                      kcal
+                                    </Text>
+                                  </View>
+                                </View>
+                              </AnimatedCard>
                             </TouchableOpacity>
-                            <Text
-                              className={`font-semibold text-base ${isDark ? "text-white" : "text-gray-900"}`}
-                            >
-                              {meal.meal_name}
-                            </Text>
-                            <Text
-                              className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mt-1`}
-                            >
-                              {formatDateTimeLocal(
-                                meal.logged_at,
-                                "MMM dd, HH:mm",
-                              )}
-                            </Text>
-                            <View className="flex-row items-center gap-2 mt-1">
-                              <View
-                                className={`px-2 py-0.5 rounded ${
-                                  MEAL_TYPE_COLORS[
-                                    meal.meal_type.toLowerCase() as keyof typeof MEAL_TYPE_COLORS
-                                  ]?.[isDark ? "dark" : "light"] ||
-                                  (isDark ? "bg-gray-800/30" : "bg-gray-100")
-                                }`}
-                              >
-                                <Text
-                                  className={`text-xs ${
-                                    MEAL_TYPE_TEXT_COLORS[
-                                      meal.meal_type.toLowerCase() as keyof typeof MEAL_TYPE_TEXT_COLORS
-                                    ]?.[isDark ? "dark" : "light"] ||
-                                    (isDark ? "text-gray-300" : "text-gray-800")
-                                  }`}
-                                >
-                                  {meal.meal_type}
-                                </Text>
-                              </View>
-                            </View>
-                          </View>
-                          <View className="items-end">
-                            <Text className="text-lg font-bold text-green-600">
-                              {Math.round(meal.total_calories)}
-                            </Text>
-                            <Text
-                              className={`text-xs ${isDark ? "text-gray-500" : "text-gray-500"}`}
-                            >
-                              calories
-                            </Text>
-                            <View className="mt-2">
-                              <Text
-                                className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"}`}
-                              >
-                                P: {Math.round(meal.total_protein)}g
-                              </Text>
-                              <Text
-                                className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"}`}
-                              >
-                                C: {Math.round(meal.total_carbs)}g
-                              </Text>
-                              <Text
-                                className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"}`}
-                              >
-                                F: {Math.round(meal.total_fat)}g
-                              </Text>
-                            </View>
-                          </View>
-                        </AnimatedCard>
-                      ))}
-                    </View>
-                  ) : (
-                    <View className="items-center py-12">
-                      <Utensils
-                        size={48}
-                        color={isDark ? "#4b5563" : "#d1d5db"}
-                      />
-                      <Text
-                        className={`${isDark ? "text-gray-400" : "text-gray-500"} mt-4 text-lg font-medium`}
-                      >
-                        No meals found
-                      </Text>
-                      <Text
-                        className={`text-sm ${isDark ? "text-gray-600" : "text-gray-400"} mt-1`}
-                      >
-                        Try adjusting your date range
-                      </Text>
-                    </View>
+                          ))}
+                        </View>
+                      ) : (
+                        <View className="items-center py-12">
+                          <Utensils
+                            size={48}
+                            color={isDark ? "#4b5563" : "#d1d5db"}
+                          />
+                          <Text
+                            className={`${isDark ? "text-gray-400" : "text-gray-500"} mt-4 text-lg font-medium`}
+                          >
+                            No meals found
+                          </Text>
+                          <Text
+                            className={`text-sm ${isDark ? "text-gray-600" : "text-gray-400"} mt-1`}
+                          >
+                            Try adjusting your date range
+                          </Text>
+                        </View>
+                      )}
+                    </AnimatedCard>
                   )}
                 </AnimatedCard>
               )}
