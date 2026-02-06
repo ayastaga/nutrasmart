@@ -8,54 +8,51 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Image,
 } from "react-native";
 import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import * as QueryParams from "expo-auth-session/build/QueryParams";
-import * as Linking from "expo-linking";
 import { supabase } from "@/lib/supabase.web";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 
-export default function LoginScreen() {
+export default function RegisterScreen() {
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const onLogin = async () => {
-    if (!email || !password) return alert("Please fill in all fields");
+  const onSignUp = async () => {
+    if (!email || !password || !fullName) {
+      return alert("Please fill in all fields");
+    }
 
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.signUp({
       email,
       password,
+      options: {
+        data: {
+          full_name: fullName,
+        },
+      },
     });
+
     setLoading(false);
 
     if (error) {
       alert(error.message);
       return;
     }
-    router.replace("/(tabs)");
-  };
 
-  const onLoginWithGoogle = async () => {
-    // Generate a redirect URL that works for your specific environment
-    const redirectTo = Linking.createURL("/(tabs)");
-
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo,
-          skipBrowserRedirect: false,
-        },
-      });
-
-      if (error) throw error;
-    } catch (error: any) {
-      alert(error.message);
+    // If Supabase is set to 'Confirm Email', session might be null initially
+    if (!session) {
+      alert("Please check your inbox for a confirmation email!");
+      router.replace("/login");
+    } else {
+      router.replace("/(tabs)");
     }
   };
 
@@ -78,16 +75,30 @@ export default function LoginScreen() {
                 type="title"
                 className="text-4xl mt-20 font-extrabold text-gray-900 tracking-tight"
               >
-                Welcome Back
+                Create Account
               </ThemedText>
               <ThemedText className="text-gray-500 text-lg mt-2">
-                Good to see you again.
+                Join us and start your journey.
               </ThemedText>
             </View>
 
             {/* Form Section */}
             <View className="space-y-4">
               <View>
+                <Text className="text-gray-700 font-medium mb-2 ml-1">
+                  Full Name
+                </Text>
+                <TextInput
+                  placeholder="John Doe"
+                  placeholderTextColor="#9CA3AF"
+                  autoCapitalize="words"
+                  value={fullName}
+                  onChangeText={setFullName}
+                  className="bg-gray-50 rounded-2xl px-5 py-4 text-gray-900 text-base border border-gray-100"
+                />
+              </View>
+
+              <View className="mt-4">
                 <Text className="text-gray-700 font-medium mb-2 ml-1">
                   Email Address
                 </Text>
@@ -107,7 +118,7 @@ export default function LoginScreen() {
                   Password
                 </Text>
                 <TextInput
-                  placeholder="••••••••"
+                  placeholder="Create a password"
                   placeholderTextColor="#9CA3AF"
                   secureTextEntry
                   value={password}
@@ -117,9 +128,9 @@ export default function LoginScreen() {
               </View>
             </View>
 
-            {/* Login Button */}
+            {/* Register Button */}
             <TouchableOpacity
-              onPress={onLogin}
+              onPress={onSignUp}
               disabled={loading}
               activeOpacity={0.8}
               className={`rounded-2xl py-4 mt-8 flex-row justify-center items-center ${
@@ -128,40 +139,22 @@ export default function LoginScreen() {
             >
               {loading && <ActivityIndicator color="white" className="mr-2" />}
               <Text className="text-white font-bold text-lg">
-                {loading ? "Signing in..." : "Login"}
-              </Text>
-            </TouchableOpacity>
-
-            <View className="flex-row items-center my-8">
-              <View className="h-[1px] bg-gray-200 flex-1" />
-              <Text className="text-gray-400 mx-4 font-medium">OR</Text>
-              <View className="h-[1px] bg-gray-200 flex-1" />
-            </View>
-
-            {/* Google Login */}
-            <TouchableOpacity
-              onPress={onLoginWithGoogle}
-              activeOpacity={0.7}
-              className="flex-row items-center justify-center rounded-2xl border border-gray-200 py-4 bg-white"
-            >
-              {/* If you use Lucide or Ionicons, add a Google icon here */}
-              <Text className="text-gray-700 font-bold text-base">
-                Continue with Google
+                {loading ? "Creating account..." : "Sign Up"}
               </Text>
             </TouchableOpacity>
 
             {/* Footer */}
             <View className="flex-row justify-center mt-auto py-6">
               <Text className="text-gray-500 text-base">
-                Don't have an account?
+                Already have an account?
               </Text>
               <TouchableOpacity
-                onPress={() => router.push("/register")}
+                onPress={() => router.push("/login")}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
                 <Text className="text-green-600 font-bold text-base">
                   {" "}
-                  Sign up
+                  Login
                 </Text>
               </TouchableOpacity>
             </View>

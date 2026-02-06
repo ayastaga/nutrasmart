@@ -375,3 +375,42 @@ export async function getNutritionSummary(params: {
     throw error;
   }
 }
+
+export async function uploadAvatarApi(
+  imageUri: string,
+  userId: string,
+): Promise<UploadedFile> {
+  try {
+    const filename = imageUri.split("/").pop() || `photo-${Date.now()}.jpg`;
+
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: "base64",
+    });
+
+    // We pass <UploadedFile> here so TypeScript knows what 'data' is
+    const { data, error } = await supabase.functions.invoke<UploadedFile>(
+      "upload-avatar",
+      {
+        body: {
+          imageBase64: `data:image/jpeg;base64,${base64}`,
+          filename,
+          userId,
+        },
+      },
+    );
+
+    if (error) throw error;
+    if (!data) throw new Error("No data returned from upload");
+
+    return {
+      url: data.url,
+      ufsUrl: data.url, // Mapping this since your interface requires it
+      key: data.key,
+      name: data.name || filename,
+      size: data.size || 0,
+    };
+  } catch (err) {
+    console.error("Error in uploadAvatar:", err);
+    throw err;
+  }
+}
