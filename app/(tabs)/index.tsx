@@ -1,1327 +1,2053 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
+  ScrollView,
   TouchableOpacity,
   Image,
-  ScrollView,
   ActivityIndicator,
-  Alert,
+  Modal,
   Dimensions,
-  StyleSheet,
+  RefreshControl,
+  Animated,
+  useColorScheme,
+  Alert,
+  TextInput,
 } from "react-native";
-import { SafeAreaView, SafeAreaProvider } from "react-native-safe-area-context";
-import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
-import * as ImagePicker from "expo-image-picker";
+import { supabase } from "../../lib/supabase.web";
+import { useAuthContext } from "@/hooks/use-auth-context";
+import { useTimezoneStore, COMMON_TIMEZONES } from "@/hooks/use-timezone";
 import {
-  Camera,
-  FlipHorizontal,
-  Upload,
-  X,
+  format,
+  subDays,
+  parseISO,
+  startOfDay,
+  eachDayOfInterval,
+  differenceInDays,
+} from "date-fns";
+import { LineChart, PieChart, StackedBarChart } from "react-native-chart-kit";
+import { BarChart } from "react-native-gifted-charts";
+import {
+  Calendar,
+  TrendingUp,
+  Activity,
+  Target,
+  Clock,
+  Utensils,
   Eye,
-  ArrowLeft,
-  Plus,
+  X,
+  CalendarDays,
+  ChevronDown,
+  Globe,
 } from "lucide-react-native";
-import {
-  uploadImage,
-  analyzeImages,
-  saveMeal,
-  deleteTempImages,
-  type AnalysisResult,
-  type UploadedFile,
-  type MealData,
-} from "@/lib/api";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Calendar as RNCalendar } from "react-native-calendars";
+import { Edit2, Trash2, Save, Camera } from "lucide-react-native";
+import * as ImagePicker from "expo-image-picker";
+import { formatInTimeZone } from "date-fns-tz";
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-
-console.log(process.env.EXPO_PUBLIC_UPLOADTHING_TOKEN);
-
-interface CapturedImage {
-  uri: string;
-  uploadedFile?: UploadedFile;
+interface NutritionSummary {
+  date?: string;
+  week_start?: string;
+  month_start?: string;
+  year_start?: string;
+  total_calories: number;
+  total_protein: number;
+  total_carbs: number;
+  total_fat: number;
+  total_fiber: number;
+  total_sodium: number;
+  meal_count: number;
+  days_logged?: number;
+  avg_daily_calories?: number;
 }
 
-export default function HomeScreen() {
-  const [facing, setFacing] = useState<CameraType>("back");
-  const [permission, requestPermission] = useCameraPermissions();
-  const [capturedImages, setCapturedImages] = useState<CapturedImage[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(
-    null,
+interface Meal {
+  id: string;
+  meal_name: string;
+  meal_type: string;
+  logged_at: string;
+  total_calories: number;
+  total_protein: number;
+  total_carbs: number;
+  total_fat: number;
+  total_fiber?: number;
+  total_sodium?: number;
+  image_url?: string;
+  description?: string;
+  meal_dishes: any[];
+}
+
+const MEAL_TYPE_COLORS = {
+  breakfast: { light: "bg-orange-100", dark: "bg-orange-900/30" },
+  lunch: { light: "bg-blue-100", dark: "bg-blue-900/30" },
+  dinner: { light: "bg-green-100", dark: "bg-green-900/30" },
+  snack: { light: "bg-purple-100", dark: "bg-purple-900/30" },
+  other: { light: "bg-gray-100", dark: "bg-gray-800/30" },
+};
+
+const MEAL_TYPE_TEXT_COLORS = {
+  breakfast: { light: "text-orange-800", dark: "text-orange-300" },
+  lunch: { light: "text-blue-800", dark: "text-blue-300" },
+  dinner: { light: "text-green-800", dark: "text-green-300" },
+  snack: { light: "text-purple-800", dark: "text-purple-300" },
+  other: { light: "text-gray-800", dark: "text-gray-300" },
+};
+
+const MAX_DAILY_CHART_POINTS = 29; // Allow up to 29 days in daily view (disables 30-day and 90-day buttons)
+
+// Animated Card Component
+const AnimatedCard = ({ children, delay = 0, className = "" }: any) => {
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 500,
+        delay,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 500,
+        delay,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
+
+  return (
+    <Animated.View
+      style={{
+        opacity: fadeAnim,
+        transform: [{ translateY: slideAnim }],
+      }}
+      className={className}
+    >
+      {children}
+    </Animated.View>
   );
-  const [showResults, setShowResults] = useState(false);
-  const [showPreview, setShowPreview] = useState(false); // Preview mode before analysis
-  const [expandedImage, setExpandedImage] = useState<string | null>(null);
-  const cameraRef = useRef<CameraView>(null);
+};
+
+export default function ProfileScreen() {
+  const { session } = useAuthContext();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
+  const {
+    timezone: storedTimezone,
+    isAutoDetect,
+    getCurrentTimezone,
+    setTimezone,
+    resetToAuto,
+  } = useTimezoneStore();
+  const userTimezone = getCurrentTimezone();
+  const screenWidth = Dimensions.get("window").width;
+
+  const [period, setPeriod] = useState<
+    "daily" | "weekly" | "monthly" | "yearly"
+  >("daily");
+  const [summaryData, setSummaryData] = useState<NutritionSummary[]>([]);
+  const [meals, setMeals] = useState<Meal[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState<
+    "calories" | "macros" | "distribution" | "meals"
+  >("calories");
+  const [selectedImage, setSelectedImage] = useState<{
+    url: string;
+    name: string;
+  } | null>(null);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [calendarSelection, setCalendarSelection] = useState<{
+    start?: string;
+    end?: string;
+  }>({});
+  const [showTimezonePicker, setShowTimezonePicker] = useState(false);
+
+  const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
+  const [editForm, setEditForm] = useState({
+    meal_name: "",
+    meal_type: "",
+    description: "",
+    total_calories: "",
+    total_protein: "",
+    total_carbs: "",
+    total_fat: "",
+    total_fiber: "",
+    total_sodium: "",
+  });
   const [isSaving, setIsSaving] = useState(false);
 
-  const handleSaveToProfile = async () => {
-    if (!analysisResult || analysisResult.images.length === 0) return;
+  const convertUTCToLocal = (utcDateString: string) => {
+    const date = new Date(utcDateString);
+    return date.toLocaleDateString("en-CA", {
+      timeZone: userTimezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  };
 
-    setIsSaving(true);
+  const formatDateTimeLocal = (utcDateString: string, formatStr: string) => {
+    if (!utcDateString) return "Invalid date";
 
     try {
-      // For simplicity, we'll save the first image as a meal
-      // You can modify this to save all images or let user choose
-      const imageAnalysis = analysisResult.images[0];
+      const date = new Date(utcDateString);
 
-      const mealData: MealData = {
-        mealName: imageAnalysis.description.substring(0, 50) || "Meal",
-        mealType: "snack", // You can add UI to let user select meal type
-        imageUrl: imageAnalysis.imageUrl,
-        imageKey: imageAnalysis.imageKey,
-        description: imageAnalysis.description,
-        totalNutrition: imageAnalysis.totalNutrition || {
-          calories: 0,
-          protein: 0,
-          carbs: 0,
-          fat: 0,
-          fiber: 0,
-          sodium: 0,
-        },
-        dishes: imageAnalysis.dishes || [],
-      };
+      if (isNaN(date.getTime())) {
+        console.error("Invalid date:", utcDateString);
+        return "Invalid date";
+      }
 
-      await saveMeal(mealData);
-
-      Alert.alert("Success", "Meal saved to your profile!", [
-        {
-          text: "OK",
-          onPress: () => {
-            // Navigate to profile or reset
-            resetAnalysis();
-          },
-        },
-      ]);
+      return formatInTimeZone(date, userTimezone, formatStr);
     } catch (error) {
-      console.error("Error saving meal:", error);
-      Alert.alert(
-        "Error",
-        error instanceof Error
-          ? error.message
-          : "Failed to save meal. Please try again.",
-      );
+      console.error("Date formatting error:", error, utcDateString);
+      return "Invalid date";
+    }
+  };
+
+  const quickRanges = [
+    { label: "Last 7 days", from: subDays(new Date(), 6) }, // 7 days total
+    { label: "Last 30 days", from: subDays(new Date(), 29) }, // 30 days total
+    { label: "Last 90 days", from: subDays(new Date(), 89) }, // 90 days total
+  ];
+
+  const isRangeDisabled = (from: Date, to: Date) => {
+    if (period !== "daily") return false;
+    const days = differenceInDays(to, from) + 1; // inclusive
+    console.log("🔍 Checking range:", {
+      from: format(from, "yyyy-MM-dd"),
+      to: format(to, "yyyy-MM-dd"),
+      days,
+      disabled: days > MAX_DAILY_CHART_POINTS,
+    });
+    return days > MAX_DAILY_CHART_POINTS; // Allow up to 30 days, disable 31+
+  };
+
+  const isCustomRangeDisabled = () => {
+    // Custom range button should be disabled when viewing daily (since daily only allows up to 30 days)
+    return period === "daily";
+  };
+
+  const [dateRange, setDateRange] = useState({
+    from: subDays(new Date(), 6),
+    to: new Date(),
+  });
+
+  const fetchNutritionSummary = async () => {
+    if (!session?.user) return;
+
+    setIsLoading(true);
+    try {
+      const startDate = format(startOfDay(dateRange.from), "yyyy-MM-dd");
+      const endDate = format(startOfDay(dateRange.to), "yyyy-MM-dd");
+
+      console.log("📊 Fetching nutrition summary:", {
+        period,
+        startDate,
+        endDate,
+        userTimezone,
+      });
+
+      if (period === "daily") {
+        // ✅ FIXED: Use daily_nutrition_summary table instead of aggregating meals
+        const { data: summaryData, error } = await supabase
+          .from("daily_nutrition_summary")
+          .select("*")
+          .eq("user_id", session.user.id)
+          .gte("date", startDate)
+          .lte("date", endDate)
+          .order("date", { ascending: true });
+
+        if (error) {
+          console.error("❌ Error fetching daily summary:", error);
+          throw error;
+        }
+
+        console.log("✅ Fetched daily summaries:", summaryData?.length);
+
+        // Create a complete date range with zeros for missing days
+        const allDates = eachDayOfInterval({
+          start: startOfDay(dateRange.from),
+          end: startOfDay(dateRange.to),
+        });
+
+        const summaryMap = new Map(summaryData?.map((s) => [s.date, s]) || []);
+
+        const completeData = allDates.map((date) => {
+          const dateStr = format(date, "yyyy-MM-dd");
+          const existing = summaryMap.get(dateStr);
+
+          return (
+            existing || {
+              date: dateStr,
+              total_calories: 0,
+              total_protein: 0,
+              total_carbs: 0,
+              total_fat: 0,
+              total_fiber: 0,
+              total_sodium: 0,
+              meal_count: 0,
+            }
+          );
+        });
+
+        console.log("📈 Complete daily data:", completeData.length, "days");
+        setSummaryData(completeData);
+      } else {
+        // Existing RPC logic for weekly/monthly/yearly
+        const functionName = `get_${period}_nutrition_summary`;
+        console.log("🔧 Calling RPC function:", functionName);
+
+        const { data, error } = await supabase.rpc(functionName, {
+          p_user_id: session.user.id,
+          p_start_date: startDate,
+          p_end_date: endDate,
+          p_limit: 365,
+        });
+
+        if (error) {
+          console.error("❌ RPC error:", error);
+          throw error;
+        }
+
+        console.log("✅ RPC data:", data?.length);
+        setSummaryData(data || []);
+      }
+    } catch (error) {
+      console.error("Error fetching nutrition summary:", error);
+    } finally {
+      setIsLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  // Watch for timezone changes
+  useEffect(() => {
+    if (session?.user) {
+      console.log("🌍 Timezone changed to:", userTimezone);
+      fetchNutritionSummary();
+      fetchMeals();
+    }
+  }, [userTimezone]);
+
+  const renderTimezoneModal = () => {
+    const currentSystemTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const groupedTimezones = COMMON_TIMEZONES.reduce(
+      (acc, tz) => {
+        if (!acc[tz.region]) acc[tz.region] = [];
+        acc[tz.region].push(tz);
+        return acc;
+      },
+      {} as Record<string, typeof COMMON_TIMEZONES>,
+    );
+
+    return (
+      <Modal
+        visible={showTimezonePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowTimezonePicker(false)}
+      >
+        <View
+          className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
+        >
+          <View
+            className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[80%]`}
+          >
+            <View className="flex-row items-center justify-between mb-4">
+              <Text
+                className={`text-xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+              >
+                Select Timezone
+              </Text>
+              <TouchableOpacity onPress={() => setShowTimezonePicker(false)}>
+                <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
+              </TouchableOpacity>
+            </View>
+
+            {isAutoDetect && (
+              <View
+                className={`mb-4 p-3 rounded-lg ${isDark ? "bg-green-900/30" : "bg-green-100"}`}
+              >
+                <Text
+                  className={`text-sm font-medium ${isDark ? "text-green-400" : "text-green-700"}`}
+                >
+                  🌍 Auto-detecting: {currentSystemTz}
+                </Text>
+                <Text
+                  className={`text-xs mt-1 ${isDark ? "text-green-300" : "text-green-600"}`}
+                >
+                  Your timezone is automatically detected from your device
+                </Text>
+              </View>
+            )}
+
+            <ScrollView showsVerticalScrollIndicator={false} className="mb-4">
+              {Object.entries(groupedTimezones).map(([region, timezones]) => (
+                <View key={region} className="mb-4">
+                  <Text
+                    className={`text-xs font-bold mb-2 ${isDark ? "text-gray-500" : "text-gray-400"} uppercase`}
+                  >
+                    {region}
+                  </Text>
+                  {timezones.map((tz) => {
+                    const isSelected =
+                      (tz.value === "auto" && isAutoDetect) ||
+                      (tz.value === storedTimezone && !isAutoDetect);
+
+                    return (
+                      <TouchableOpacity
+                        key={tz.value}
+                        onPress={() => {
+                          if (tz.value === "auto") {
+                            resetToAuto();
+                          } else {
+                            setTimezone(tz.value);
+                          }
+                          setShowTimezonePicker(false);
+                        }}
+                        className={`p-4 rounded-lg mb-2 ${
+                          isSelected
+                            ? isDark
+                              ? "bg-green-900/30"
+                              : "bg-green-100"
+                            : isDark
+                              ? "bg-gray-800"
+                              : "bg-gray-100"
+                        }`}
+                      >
+                        <View className="flex-row items-center justify-between">
+                          <View className="flex-1">
+                            <Text
+                              className={`font-medium ${
+                                isSelected
+                                  ? isDark
+                                    ? "text-green-400"
+                                    : "text-green-700"
+                                  : isDark
+                                    ? "text-white"
+                                    : "text-gray-900"
+                              }`}
+                            >
+                              {tz.label}
+                            </Text>
+                            {tz.value !== "auto" && (
+                              <Text
+                                className={`text-xs mt-1 ${isDark ? "text-gray-400" : "text-gray-600"}`}
+                              >
+                                {tz.value}
+                              </Text>
+                            )}
+                          </View>
+                          {isSelected && (
+                            <View className="w-5 h-5 rounded-full bg-green-600 items-center justify-center">
+                              <Text className="text-white text-xs">✓</Text>
+                            </View>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  // Fixed fetchMeals function - replace in your ProfileScreen
+
+  const fetchMeals = async () => {
+    if (!session?.user) {
+      console.log("❌ No session, skipping fetchMeals");
+      return;
+    }
+
+    try {
+      const startDate = format(startOfDay(dateRange.from), "yyyy-MM-dd");
+      const endDate = format(startOfDay(dateRange.to), "yyyy-MM-dd");
+
+      console.log("🍽️ Fetching meals with params:", {
+        startDate,
+        endDate,
+        userId: session.user.id,
+        timezone: userTimezone,
+      });
+
+      // Fetch ALL meals, then filter client-side for accurate timezone handling
+      const { data, error } = await supabase
+        .from("meals")
+        .select("*, meal_dishes(*)")
+        .eq("user_id", session.user.id)
+        .order("logged_at", { ascending: false });
+
+      if (error) {
+        console.error("❌ Error fetching meals:", error);
+        throw error;
+      }
+
+      console.log("📊 Total meals in database:", data?.length);
+
+      // Filter by date range using user's timezone
+      const filteredMeals =
+        data?.filter((meal) => {
+          const localDateStr = convertUTCToLocal(meal.logged_at);
+          const isInRange =
+            localDateStr >= startDate && localDateStr <= endDate;
+
+          if (!isInRange) {
+            console.log(
+              `📍 Meal "${meal.meal_name}" at ${localDateStr} is outside range ${startDate} to ${endDate}`,
+            );
+          }
+
+          return isInRange;
+        }) || [];
+
+      console.log("✅ Filtered meals count:", filteredMeals.length);
+      setMeals(filteredMeals);
+    } catch (error) {
+      console.error("❌ Error fetching meals:", error);
+      setMeals([]);
+    }
+  };
+
+  useEffect(() => {
+    if (session?.user) {
+      fetchNutritionSummary();
+      fetchMeals();
+    }
+  }, [period, dateRange, session]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchNutritionSummary();
+    fetchMeals();
+  };
+
+  const getTotalStats = () => {
+    return summaryData.reduce(
+      (acc, item) => ({
+        totalCalories: acc.totalCalories + Number(item.total_calories),
+        totalProtein: acc.totalProtein + Number(item.total_protein),
+        totalCarbs: acc.totalCarbs + Number(item.total_carbs),
+        totalFat: acc.totalFat + Number(item.total_fat),
+        totalMeals: acc.totalMeals + Number(item.meal_count),
+        daysLogged: acc.daysLogged + (Number(item.meal_count) > 0 ? 1 : 0),
+      }),
+      {
+        totalCalories: 0,
+        totalProtein: 0,
+        totalCarbs: 0,
+        totalFat: 0,
+        totalMeals: 0,
+        daysLogged: 0,
+      },
+    );
+  };
+
+  const openEditModal = (meal: Meal) => {
+    setEditingMeal(meal);
+    setEditForm({
+      meal_name: meal.meal_name,
+      meal_type: meal.meal_type,
+      description: meal.description || "",
+      total_calories: meal.total_calories.toString(),
+      total_protein: meal.total_protein.toString(),
+      total_carbs: meal.total_carbs.toString(),
+      total_fat: meal.total_fat.toString(),
+      total_fiber: (meal.total_fiber || 0).toString(),
+      total_sodium: (meal.total_sodium || 0).toString(),
+    });
+  };
+
+  const closeEditModal = () => {
+    setEditingMeal(null);
+    setEditForm({
+      meal_name: "",
+      meal_type: "",
+      description: "",
+      total_calories: "",
+      total_protein: "",
+      total_carbs: "",
+      total_fat: "",
+      total_fiber: "",
+      total_sodium: "",
+    });
+  };
+
+  const handleSaveMeal = async () => {
+    if (!editingMeal) return;
+
+    setIsSaving(true);
+    try {
+      const { error } = await supabase
+        .from("meals")
+        .update({
+          meal_name: editForm.meal_name,
+          meal_type: editForm.meal_type,
+          description: editForm.description,
+          total_calories: parseFloat(editForm.total_calories) || 0,
+          total_protein: parseFloat(editForm.total_protein) || 0,
+          total_carbs: parseFloat(editForm.total_carbs) || 0,
+          total_fat: parseFloat(editForm.total_fat) || 0,
+          total_fiber: parseFloat(editForm.total_fiber) || 0,
+          total_sodium: parseFloat(editForm.total_sodium) || 0,
+        })
+        .eq("id", editingMeal.id);
+
+      if (error) throw error;
+
+      Alert.alert("Success", "Meal updated successfully!");
+      closeEditModal();
+      fetchMeals();
+      fetchNutritionSummary();
+    } catch (error) {
+      console.error("Error updating meal:", error);
+      Alert.alert("Error", "Failed to update meal");
     } finally {
       setIsSaving(false);
     }
   };
 
-  useEffect(() => {
-    (async () => {
-      const { status } =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Permission needed",
-          "Camera roll permission is required to upload images",
-        );
-      }
-    })();
-  }, []);
+  const handleDeleteMeal = async () => {
+    if (!editingMeal) return;
 
-  if (!permission) {
-    return <View style={styles.container} />;
-  }
+    Alert.alert("Delete Meal", "Are you sure you want to delete this meal?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            console.log("🗑️ Deleting meal via edge function:", editingMeal.id);
 
-  if (!permission.granted) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.permissionContainer}>
-          <Camera size={64} color="#10b981" />
-          <Text style={styles.permissionText}>Camera permission required</Text>
-          <Text style={styles.permissionSubtext}>
-            Allow NutraSmart to use your camera to analyze food
-          </Text>
-          <TouchableOpacity
-            style={styles.permissionButton}
-            onPress={requestPermission}
-          >
-            <Text style={styles.permissionButtonText}>Grant Permission</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
+            // Get the session (includes access_token)
+            const {
+              data: { session },
+              error: sessionError,
+            } = await supabase.auth.getSession();
 
-  const toggleCameraFacing = () => {
-    setFacing((current) => (current === "back" ? "front" : "back"));
+            if (sessionError || !session) {
+              throw new Error("Not authenticated");
+            }
+
+            console.log("📝 Token exists:", !!session.access_token);
+
+            // Include the JWT in the Authorization header
+            const { data, error } = await supabase.functions.invoke(
+              "delete-meal",
+              {
+                body: { mealId: editingMeal.id },
+                headers: {
+                  Authorization: `Bearer ${session.access_token}`,
+                },
+              },
+            );
+
+            console.log("📡 Response:", { data, error });
+
+            if (error) throw error;
+            if (!data?.success) throw new Error(data?.error || "Delete failed");
+
+            Alert.alert("Success", "Meal deleted successfully!");
+            closeEditModal();
+
+            await Promise.all([fetchMeals(), fetchNutritionSummary()]);
+          } catch (error: any) {
+            console.error("❌ Error:", error);
+            Alert.alert(
+              "Error",
+              `Failed to delete: ${error.message || "Unknown error"}`,
+            );
+          }
+        },
+      },
+    ]);
   };
 
-  const takePicture = async () => {
-    if (capturedImages.length >= 5) {
-      Alert.alert(
-        "Limit Reached",
-        "You can only analyze up to 5 images at a time",
-      );
+  const handleChangeImage = async () => {
+    if (!editingMeal) return;
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Camera roll permission is required");
       return;
     }
 
-    if (cameraRef.current) {
-      try {
-        const photo = await cameraRef.current.takePictureAsync({
-          quality: 0.8,
-        });
-        if (photo?.uri) {
-          setCapturedImages((prev) => [...prev, { uri: photo.uri }]);
-          setShowPreview(true); // Show preview mode
-        }
-      } catch (error) {
-        console.error("Error taking picture:", error);
-        Alert.alert("Error", "Failed to capture photo");
-      }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      // You would need to implement image upload here
+      Alert.alert("Note", "Image upload functionality needs to be implemented");
     }
   };
 
-  const pickImage = async () => {
-    if (capturedImages.length >= 5) {
-      Alert.alert(
-        "Limit Reached",
-        "You can only analyze up to 5 images at a time",
-      );
-      return;
-    }
+  const stats = getTotalStats();
+  const avgDailyCalories =
+    stats.daysLogged > 0
+      ? Math.round(stats.totalCalories / stats.daysLogged)
+      : 0;
 
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsMultipleSelection: true,
-        quality: 0.8,
-        selectionLimit: 5 - capturedImages.length,
+  const formatChartData = () => {
+    if (!dateRange.from || !dateRange.to)
+      return { labels: [], datasets: [{ data: [0] }] };
+
+    const dataMap = new Map<string, number>();
+
+    summaryData.forEach((item) => {
+      const dateKey =
+        item.date || item.week_start || item.month_start || item.year_start;
+      if (dateKey) {
+        const formattedKey = /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+          ? dateKey
+          : format(parseISO(dateKey), "yyyy-MM-dd");
+        dataMap.set(formattedKey, Number(item.total_calories));
+      }
+    });
+
+    if (period === "daily") {
+      const allDates = eachDayOfInterval({
+        start: startOfDay(dateRange.from),
+        end: startOfDay(dateRange.to),
       });
 
-      if (!result.canceled) {
-        const newImages = result.assets.map((asset) => ({ uri: asset.uri }));
-        setCapturedImages((prev) => [...prev, ...newImages].slice(0, 5));
-        setShowPreview(true); // Show preview mode
-      }
-    } catch (error) {
-      console.error("Error picking image:", error);
-      Alert.alert("Error", "Failed to pick image");
+      const labelInterval =
+        allDates.length > 30 ? Math.ceil(allDates.length / 15) : 1;
+
+      const labels = allDates.map((date, index) => {
+        if (index % labelInterval === 0 || index === allDates.length - 1) {
+          return format(date, "MM/dd");
+        }
+        return "";
+      });
+
+      const data = allDates.map((date) => {
+        const dateKey = format(date, "yyyy-MM-dd");
+        return dataMap.get(dateKey) || 0;
+      });
+
+      return {
+        labels,
+        datasets: [{ data: data.length > 0 ? data : [0] }],
+      };
     }
+
+    const sortedEntries = Array.from(dataMap.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0]),
+    );
+    return {
+      labels:
+        sortedEntries.length > 0
+          ? sortedEntries.map(([date]) => format(parseISO(date), "MM/dd"))
+          : ["No data"],
+      datasets: [
+        {
+          data:
+            sortedEntries.length > 0
+              ? sortedEntries.map(([, value]) => value)
+              : [0],
+        },
+      ],
+    };
   };
 
-  const removeImage = (index: number) => {
-    setCapturedImages((prev) => {
-      const updated = prev.filter((_, i) => i !== index);
-      // If no images left, hide preview
-      if (updated.length === 0) {
-        setShowPreview(false);
-      }
-      return updated;
+  const formatMacroChartData = () => {
+    if (!summaryData || summaryData.length === 0) {
+      return [
+        {
+          label: "No data",
+          stacks: [
+            { value: 0, color: "#3b82f6" },
+            { value: 0, color: "#22c55e" },
+            { value: 0, color: "#f59e0b" },
+          ],
+        },
+      ];
+    }
+
+    const recentData = summaryData.slice(0, 7).reverse();
+
+    return recentData.map((item) => {
+      const dateKey = item.date || item.week_start || item.month_start;
+      const label = dateKey ? format(parseISO(dateKey), "MM/dd") : "";
+
+      const protein = Math.max(0, Math.round(Number(item.total_protein) || 0));
+      const carbs = Math.max(0, Math.round(Number(item.total_carbs) || 0));
+      const fat = Math.max(0, Math.round(Number(item.total_fat) || 0));
+
+      return {
+        label,
+        stacks: [
+          { value: protein, color: "#3b82f6" }, // Protein
+          { value: carbs, color: "#22c55e" }, // Carbs
+          { value: fat, color: "#f59e0b" }, // Fat
+        ],
+      };
     });
   };
 
-  const analyzeImagesHandler = async () => {
-    if (capturedImages.length === 0) {
-      Alert.alert("No Images", "Please capture or upload at least one image");
-      return;
+  const getPieChartData = () => {
+    const totals = getTotalStats();
+    const data = [
+      {
+        name: "Protein",
+        population: Math.round(totals.totalProtein * 4), // 4 cal/g
+        color: "#3b82f6",
+        legendFontColor: isDark ? "#d1d5db" : "#7F7F7F",
+      },
+      {
+        name: "Carbs",
+        population: Math.round(totals.totalCarbs * 4), // 4 cal/g
+        color: "#22c55e",
+        legendFontColor: isDark ? "#d1d5db" : "#7F7F7F",
+      },
+      {
+        name: "Fat",
+        population: Math.round(totals.totalFat * 9), // 9 cal/g
+        color: "#f59e0b",
+        legendFontColor: isDark ? "#d1d5db" : "#7F7F7F",
+      },
+    ].filter((item) => item.population > 0);
+
+    if (data.length === 0) {
+      return [
+        {
+          name: "No data",
+          population: 1,
+          color: "#E5E7EB",
+          legendFontColor: isDark ? "#d1d5db" : "#7F7F7F",
+        },
+      ];
     }
 
-    setIsAnalyzing(true);
-
-    try {
-      console.log("Starting upload and analysis...");
-
-      // Upload all images first
-      const uploadPromises = capturedImages.map(async (img) => {
-        try {
-          if (img.uploadedFile) {
-            // Already uploaded
-            return img.uploadedFile;
-          }
-
-          console.log("Uploading image:", img.uri);
-          const uploadedFile = await uploadImage(img.uri);
-          console.log("Upload success:", uploadedFile);
-
-          // Update state with uploaded file
-          setCapturedImages((prev) =>
-            prev.map((i) => (i.uri === img.uri ? { ...i, uploadedFile } : i)),
-          );
-
-          return uploadedFile;
-        } catch (error) {
-          console.error("Upload failed for image:", img.uri, error);
-          throw error;
-        }
-      });
-
-      const uploadedFiles = await Promise.all(uploadPromises);
-      console.log("All images uploaded:", uploadedFiles.length);
-
-      // Now analyze the uploaded images
-      console.log("Starting AI analysis...");
-      const result = await analyzeImages(
-        uploadedFiles.map((file) => ({
-          url: file.ufsUrl,
-          key: file.key,
-          name: file.name,
-        })),
-      );
-
-      console.log("Analysis complete:", result);
-
-      setAnalysisResult(result);
-      setShowPreview(false); // Hide preview
-      setShowResults(true); // Show results
-    } catch (error) {
-      console.error("Analysis error:", error);
-      Alert.alert(
-        "Analysis Failed",
-        error instanceof Error
-          ? error.message
-          : "Failed to analyze images. Please try again.",
-      );
-    } finally {
-      setIsAnalyzing(false);
-    }
+    return data;
   };
 
-  const resetAnalysis = async () => {
-    // Delete temp images if not saved
-    if (analysisResult && analysisResult.images.length > 0) {
-      const tempKeys = analysisResult.images
-        .map((img) => img.imageKey)
-        .filter((key) => key.startsWith("temp/"));
+  const handleCalendarDayPress = (day: any) => {
+    if (!calendarSelection.start || calendarSelection.end) {
+      setCalendarSelection({ start: day.dateString, end: undefined });
+    } else {
+      const start = new Date(calendarSelection.start);
+      const end = new Date(day.dateString);
 
-      if (tempKeys.length > 0) {
-        await deleteTempImages(tempKeys);
+      if (end >= start) {
+        setCalendarSelection({
+          start: calendarSelection.start,
+          end: day.dateString,
+        });
+      } else {
+        setCalendarSelection({
+          start: day.dateString,
+          end: calendarSelection.start,
+        });
       }
     }
-
-    setShowResults(false);
-    setShowPreview(false);
-    setAnalysisResult(null);
-    setCapturedImages([]);
-    setExpandedImage(null);
   };
 
-  const formatNutrient = (value: number, unit: string = "g") => {
-    return `${Math.round(value * 10) / 10}${unit}`;
+  const applyCalendarSelection = () => {
+    if (calendarSelection.start && calendarSelection.end) {
+      const newFrom = new Date(calendarSelection.start);
+      const newTo = new Date(calendarSelection.end);
+
+      if (isRangeDisabled(newFrom, newTo)) {
+        alert(
+          `Date range too large for daily view. Maximum ${MAX_DAILY_CHART_POINTS} days allowed. Please switch to Weekly, Monthly, or Yearly view for larger ranges.`,
+        );
+        return;
+      }
+
+      setDateRange({ from: newFrom, to: newTo });
+      setShowCalendar(false);
+      setCalendarSelection({});
+    }
   };
 
-  // Results View
-  if (showResults && analysisResult) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <ScrollView style={styles.resultsContainer}>
-          {/* Header */}
-          <View style={styles.resultsHeader}>
-            <TouchableOpacity onPress={resetAnalysis} style={styles.backButton}>
-              <ArrowLeft size={24} color="#000" />
-              <Text style={styles.backButtonText}>New Analysis</Text>
-            </TouchableOpacity>
-          </View>
+  const getMarkedDates = () => {
+    if (!calendarSelection.start) return {};
 
-          {/* Title */}
-          <View style={styles.resultsTitle}>
-            <Text style={styles.resultsTitleText}>
-              Analysis Results ({analysisResult.images.length} Image
-              {analysisResult.images.length > 1 ? "s" : ""})
-            </Text>
-          </View>
+    const marked: any = {};
 
-          {/* Overall Nutrition Summary */}
-          {analysisResult.overallTotalNutrition && (
-            <View style={styles.nutritionSummaryCard}>
-              <Text style={styles.summaryTitle}>
-                Combined Nutritional Information
-              </Text>
-              <Text style={styles.summarySubtitle}>
-                Total nutrition from all {analysisResult.images.length} images
-              </Text>
-              <View style={styles.nutritionGrid}>
-                <View style={styles.nutritionItem}>
-                  <Text style={styles.nutritionValue}>
-                    {Math.round(analysisResult.overallTotalNutrition.calories)}
-                  </Text>
-                  <Text style={styles.nutritionLabel}>Calories</Text>
-                </View>
-                <View style={styles.nutritionItem}>
-                  <Text style={styles.nutritionValue}>
-                    {formatNutrient(
-                      analysisResult.overallTotalNutrition.protein,
-                    )}
-                  </Text>
-                  <Text style={styles.nutritionLabel}>Protein</Text>
-                </View>
-                <View style={styles.nutritionItem}>
-                  <Text style={styles.nutritionValue}>
-                    {formatNutrient(analysisResult.overallTotalNutrition.carbs)}
-                  </Text>
-                  <Text style={styles.nutritionLabel}>Carbs</Text>
-                </View>
-                <View style={styles.nutritionItem}>
-                  <Text style={styles.nutritionValue}>
-                    {formatNutrient(analysisResult.overallTotalNutrition.fat)}
-                  </Text>
-                  <Text style={styles.nutritionLabel}>Fat</Text>
-                </View>
-                <View style={styles.nutritionItem}>
-                  <Text style={styles.nutritionValue}>
-                    {formatNutrient(analysisResult.overallTotalNutrition.fiber)}
-                  </Text>
-                  <Text style={styles.nutritionLabel}>Fiber</Text>
-                </View>
-                <View style={styles.nutritionItem}>
-                  <Text style={styles.nutritionValue}>
-                    {formatNutrient(
-                      analysisResult.overallTotalNutrition.sodium,
-                      "mg",
-                    )}
-                  </Text>
-                  <Text style={styles.nutritionLabel}>Sodium</Text>
-                </View>
-              </View>
-            </View>
-          )}
+    if (calendarSelection.start && !calendarSelection.end) {
+      marked[calendarSelection.start] = {
+        selected: true,
+        startingDay: true,
+        color: "#22c55e",
+        textColor: "white",
+      };
+    } else if (calendarSelection.start && calendarSelection.end) {
+      const start = new Date(calendarSelection.start);
+      const end = new Date(calendarSelection.end);
+      const days = eachDayOfInterval({ start, end });
 
-          {/* ADD SAVE TO PROFILE BUTTON */}
-          <View>
-            <TouchableOpacity
-              onPress={handleSaveToProfile}
-              disabled={isSaving}
-              style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
+      days.forEach((day, index) => {
+        const dateString = format(day, "yyyy-MM-dd");
+        marked[dateString] = {
+          selected: true,
+          color: "#22c55e",
+          textColor: "white",
+          startingDay: index === 0,
+          endingDay: index === days.length - 1,
+        };
+      });
+    }
+
+    return marked;
+  };
+
+  const renderCalendarModal = () => (
+    <Modal
+      visible={showCalendar}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setShowCalendar(false)}
+    >
+      <View
+        className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
+      >
+        <View
+          className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[80%]`}
+        >
+          <View className="flex-row items-center justify-between mb-4">
+            <Text
+              className={`text-xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
             >
-              {isSaving ? (
-                <>
-                  <ActivityIndicator color="#fff" size="small" />
-                  <Text style={styles.saveButtonText}>Saving...</Text>
-                </>
-              ) : (
-                <>
-                  <Plus size={20} color="#fff" />
-                  <Text style={styles.saveButtonText}>Save to Profile</Text>
-                </>
-              )}
+              Select Date Range
+            </Text>
+            <TouchableOpacity onPress={() => setShowCalendar(false)}>
+              <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
             </TouchableOpacity>
           </View>
 
-          {/* Individual Images */}
-          <Text style={styles.sectionTitle}>Individual Image Analysis</Text>
-          {analysisResult.images.map((imageAnalysis, index) => (
-            <View key={imageAnalysis.imageKey} style={styles.imageCard}>
-              <TouchableOpacity
-                onPress={() =>
-                  setExpandedImage(
-                    expandedImage === imageAnalysis.imageKey
-                      ? null
-                      : imageAnalysis.imageKey,
-                  )
-                }
-              >
-                <View style={styles.imageCardHeader}>
-                  <View style={styles.imageCardHeaderContent}>
-                    <Image
-                      source={{ uri: imageAnalysis.imageUrl }}
-                      style={styles.thumbnailImage}
-                    />
-                    <View style={styles.imageCardHeaderText}>
-                      <Text style={styles.imageCardTitle}>
-                        Image {index + 1}: {imageAnalysis.imageName}
-                      </Text>
-                      {imageAnalysis.totalNutrition && (
-                        <Text style={styles.imageCardSubtitle}>
-                          {Math.round(imageAnalysis.totalNutrition.calories)}{" "}
-                          calories
-                        </Text>
-                      )}
-                    </View>
-                  </View>
-                </View>
-              </TouchableOpacity>
+          <Text
+            className={`text-sm mb-4 ${isDark ? "text-gray-400" : "text-gray-600"}`}
+          >
+            {calendarSelection.start && !calendarSelection.end
+              ? "Tap the end date"
+              : calendarSelection.start && calendarSelection.end
+                ? `${format(new Date(calendarSelection.start), "MMM dd, yyyy")} - ${format(new Date(calendarSelection.end), "MMM dd, yyyy")}`
+                : "Tap the start date"}
+          </Text>
 
-              {expandedImage === imageAnalysis.imageKey && (
-                <View style={styles.imageCardContent}>
-                  {/* Image Nutrition */}
-                  {imageAnalysis.totalNutrition && (
-                    <View style={styles.imageNutritionCard}>
-                      <Text style={styles.cardSubtitle}>
-                        Image Nutritional Summary
-                      </Text>
-                      <View style={styles.nutritionGrid}>
-                        <View style={styles.smallNutritionItem}>
-                          <Text style={styles.smallNutritionValue}>
-                            {Math.round(imageAnalysis.totalNutrition.calories)}
-                          </Text>
-                          <Text style={styles.smallNutritionLabel}>
-                            Calories
-                          </Text>
-                        </View>
-                        <View style={styles.smallNutritionItem}>
-                          <Text style={styles.smallNutritionValue}>
-                            {formatNutrient(
-                              imageAnalysis.totalNutrition.protein,
-                            )}
-                          </Text>
-                          <Text style={styles.smallNutritionLabel}>
-                            Protein
-                          </Text>
-                        </View>
-                        <View style={styles.smallNutritionItem}>
-                          <Text style={styles.smallNutritionValue}>
-                            {formatNutrient(imageAnalysis.totalNutrition.carbs)}
-                          </Text>
-                          <Text style={styles.smallNutritionLabel}>Carbs</Text>
-                        </View>
-                        <View style={styles.smallNutritionItem}>
-                          <Text style={styles.smallNutritionValue}>
-                            {formatNutrient(imageAnalysis.totalNutrition.fat)}
-                          </Text>
-                          <Text style={styles.smallNutritionLabel}>Fat</Text>
-                        </View>
-                      </View>
-                    </View>
-                  )}
+          <RNCalendar
+            markingType="period"
+            markedDates={getMarkedDates()}
+            onDayPress={handleCalendarDayPress}
+            maxDate={format(new Date(), "yyyy-MM-dd")}
+            theme={{
+              backgroundColor: isDark ? "#1f2937" : "#ffffff",
+              calendarBackground: isDark ? "#1f2937" : "#ffffff",
+              textSectionTitleColor: isDark ? "#9ca3af" : "#6b7280",
+              selectedDayBackgroundColor: "#22c55e",
+              selectedDayTextColor: "#ffffff",
+              todayTextColor: "#22c55e",
+              dayTextColor: isDark ? "#e5e7eb" : "#1f2937",
+              textDisabledColor: isDark ? "#4b5563" : "#d1d5db",
+              arrowColor: "#22c55e",
+              monthTextColor: isDark ? "#f3f4f6" : "#1f2937",
+            }}
+          />
 
-                  {/* Description */}
-                  <View style={styles.descriptionCard}>
-                    <Text style={styles.cardSubtitle}>Description</Text>
-                    <Text style={styles.descriptionText}>
-                      {imageAnalysis.description}
-                    </Text>
-                    <Text style={styles.confidenceText}>
-                      Confidence: {Math.round(imageAnalysis.confidence * 100)}%
-                    </Text>
-                  </View>
-
-                  {/* Dishes */}
-                  {imageAnalysis.dishes && imageAnalysis.dishes.length > 0 && (
-                    <View style={styles.dishesSection}>
-                      <Text style={styles.cardSubtitle}>
-                        Dishes in This Image
-                      </Text>
-                      {imageAnalysis.dishes.map((dish, dishIndex) => (
-                        <View key={dishIndex} style={styles.dishCard}>
-                          <View style={styles.dishHeader}>
-                            <Text style={styles.dishName}>{dish.name}</Text>
-                            <Text style={styles.dishServing}>
-                              {dish.servingSize}
-                            </Text>
-                          </View>
-                          {dish.nutrition && (
-                            <View style={styles.dishNutrition}>
-                              <View style={styles.dishNutritionItem}>
-                                <Text style={styles.dishNutritionValue}>
-                                  {Math.round(dish.nutrition.nf_calories)}
-                                </Text>
-                                <Text style={styles.dishNutritionLabel}>
-                                  Cal
-                                </Text>
-                              </View>
-                              <View style={styles.dishNutritionItem}>
-                                <Text style={styles.dishNutritionValue}>
-                                  {formatNutrient(dish.nutrition.nf_protein)}
-                                </Text>
-                                <Text style={styles.dishNutritionLabel}>
-                                  Protein
-                                </Text>
-                              </View>
-                              <View style={styles.dishNutritionItem}>
-                                <Text style={styles.dishNutritionValue}>
-                                  {formatNutrient(
-                                    dish.nutrition.nf_total_carbohydrate,
-                                  )}
-                                </Text>
-                                <Text style={styles.dishNutritionLabel}>
-                                  Carbs
-                                </Text>
-                              </View>
-                              <View style={styles.dishNutritionItem}>
-                                <Text style={styles.dishNutritionValue}>
-                                  {formatNutrient(dish.nutrition.nf_total_fat)}
-                                </Text>
-                                <Text style={styles.dishNutritionLabel}>
-                                  Fat
-                                </Text>
-                              </View>
-                            </View>
-                          )}
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              )}
-            </View>
-          ))}
-
-          {/* Activity Suggestions */}
-          {analysisResult.overallTotalNutrition && (
-            <View style={styles.activityCard}>
-              <Text style={styles.activityTitle}>Activity Suggestions</Text>
-              <Text style={styles.activitySubtitle}>
-                Time needed to burn{" "}
-                {Math.round(analysisResult.overallTotalNutrition.calories)}{" "}
-                calories
-              </Text>
-              <View style={styles.activityGrid}>
-                <View style={styles.activityItem}>
-                  <Text style={styles.activityValue}>
-                    {Math.round(
-                      analysisResult.overallTotalNutrition.calories / 10,
-                    )}{" "}
-                    min
-                  </Text>
-                  <Text style={styles.activityLabel}>Running</Text>
-                </View>
-                <View style={styles.activityItem}>
-                  <Text style={styles.activityValue}>
-                    {Math.round(
-                      analysisResult.overallTotalNutrition.calories / 8,
-                    )}{" "}
-                    min
-                  </Text>
-                  <Text style={styles.activityLabel}>Cycling</Text>
-                </View>
-                <View style={styles.activityItem}>
-                  <Text style={styles.activityValue}>
-                    {Math.round(
-                      analysisResult.overallTotalNutrition.calories / 6,
-                    )}{" "}
-                    min
-                  </Text>
-                  <Text style={styles.activityLabel}>Walking</Text>
-                </View>
-                <View style={styles.activityItem}>
-                  <Text style={styles.activityValue}>
-                    {Math.round(
-                      analysisResult.overallTotalNutrition.calories / 12,
-                    )}{" "}
-                    min
-                  </Text>
-                  <Text style={styles.activityLabel}>Swimming</Text>
-                </View>
-              </View>
-            </View>
-          )}
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // Image Preview Screen (after capture, before analysis)
-  if (showPreview && capturedImages.length > 0) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.previewScreenContainer}>
-          {/* Header */}
-          <View style={styles.previewHeader}>
+          <View className="flex-row gap-3 mt-6">
             <TouchableOpacity
               onPress={() => {
-                setShowPreview(false);
-                setCapturedImages([]);
+                setCalendarSelection({});
+                setShowCalendar(false);
               }}
-              style={styles.previewBackButton}
+              className={`flex-1 py-3 rounded-lg ${isDark ? "bg-gray-800" : "bg-gray-200"}`}
             >
-              <ArrowLeft size={24} color="#000" />
-              <Text style={styles.previewBackText}>Back to Camera</Text>
+              <Text
+                className={`text-center font-semibold ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              >
+                Cancel
+              </Text>
             </TouchableOpacity>
-            <Text style={styles.previewTitle}>
-              {capturedImages.length} Image
-              {capturedImages.length > 1 ? "s" : ""} Selected
-            </Text>
+            <TouchableOpacity
+              onPress={applyCalendarSelection}
+              disabled={!calendarSelection.start || !calendarSelection.end}
+              className={`flex-1 py-3 rounded-lg ${
+                calendarSelection.start && calendarSelection.end
+                  ? "bg-green-600"
+                  : isDark
+                    ? "bg-gray-800"
+                    : "bg-gray-300"
+              }`}
+            >
+              <Text
+                className={`text-center font-semibold ${
+                  calendarSelection.start && calendarSelection.end
+                    ? "text-white"
+                    : isDark
+                      ? "text-gray-600"
+                      : "text-gray-500"
+                }`}
+              >
+                Apply
+              </Text>
+            </TouchableOpacity>
           </View>
+        </View>
+      </View>
+    </Modal>
+  );
 
-          {/* Image Grid */}
-          <ScrollView
-            style={styles.previewScrollView}
-            contentContainerStyle={styles.previewGrid}
+  const renderEditMealModal = () => {
+    // Check if any changes have been made
+    const hasChanges =
+      editingMeal &&
+      (editForm.meal_name !== editingMeal.meal_name ||
+        editForm.meal_type !== editingMeal.meal_type ||
+        editForm.description !== (editingMeal.description || "") ||
+        editForm.total_calories !== editingMeal.total_calories.toString() ||
+        editForm.total_protein !== editingMeal.total_protein.toString() ||
+        editForm.total_carbs !== editingMeal.total_carbs.toString() ||
+        editForm.total_fat !== editingMeal.total_fat.toString() ||
+        editForm.total_fiber !== (editingMeal.total_fiber || 0).toString() ||
+        editForm.total_sodium !== (editingMeal.total_sodium || 0).toString());
+
+    return (
+      <Modal
+        visible={!!editingMeal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeEditModal}
+      >
+        <View
+          className={`flex-1 ${isDark ? "bg-black/70" : "bg-black/50"} justify-end`}
+        >
+          <View
+            className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-t-3xl p-6 max-h-[90%]`}
           >
-            {capturedImages.map((img, index) => (
-              <View key={index} style={styles.previewImageCard}>
-                <Image
-                  source={{ uri: img.uri }}
-                  style={styles.previewImageLarge}
-                />
-                <TouchableOpacity
-                  style={styles.previewRemoveButton}
-                  onPress={() => removeImage(index)}
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Header */}
+              <View className="flex-row items-center justify-between mb-6">
+                <Text
+                  className={`text-2xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
                 >
-                  <X size={20} color="#fff" />
+                  Edit Meal
+                </Text>
+                <TouchableOpacity onPress={closeEditModal}>
+                  <X size={24} color={isDark ? "#d1d5db" : "#6b7280"} />
                 </TouchableOpacity>
-                <View style={styles.previewImageNumber}>
-                  <Text style={styles.previewImageNumberText}>{index + 1}</Text>
+              </View>
+
+              {/* Meal Image */}
+              {editingMeal?.image_url && (
+                <View className="mb-6">
+                  <Image
+                    source={{ uri: editingMeal.image_url }}
+                    className="w-full h-48 rounded-xl"
+                    resizeMode="cover"
+                  />
+                  <TouchableOpacity
+                    onPress={handleChangeImage}
+                    className="absolute bottom-3 right-3 bg-green-600 rounded-full p-3"
+                  >
+                    <Camera size={20} color="white" />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {/* Meal Name */}
+              <View className="mb-4">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Meal Name
+                </Text>
+                <TextInput
+                  value={editForm.meal_name}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, meal_name: text })
+                  }
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="e.g., Breakfast Bowl"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                />
+              </View>
+
+              {/* Meal Type */}
+              <View className="mb-4">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Meal Type
+                </Text>
+                <View className="flex-row flex-wrap gap-2">
+                  {["breakfast", "lunch", "dinner", "snack"].map((type) => (
+                    <TouchableOpacity
+                      key={type}
+                      onPress={() =>
+                        setEditForm({ ...editForm, meal_type: type })
+                      }
+                      className={`px-4 py-2 rounded-lg ${
+                        editForm.meal_type === type
+                          ? "bg-green-600"
+                          : isDark
+                            ? "bg-gray-800"
+                            : "bg-gray-200"
+                      }`}
+                    >
+                      <Text
+                        className={`capitalize font-medium ${
+                          editForm.meal_type === type
+                            ? "text-white"
+                            : isDark
+                              ? "text-gray-300"
+                              : "text-gray-700"
+                        }`}
+                      >
+                        {type}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
               </View>
-            ))}
-          </ScrollView>
 
-          {/* Action Buttons */}
-          <View style={styles.previewActions}>
-            {capturedImages.length < 5 && (
-              <TouchableOpacity
-                style={styles.previewAddButton}
-                onPress={() => setShowPreview(false)}
+              {/* Description */}
+              <View className="mb-4">
+                <Text
+                  className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                >
+                  Description
+                </Text>
+                <TextInput
+                  value={editForm.description}
+                  onChangeText={(text) =>
+                    setEditForm({ ...editForm, description: text })
+                  }
+                  className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                  placeholder="Optional description"
+                  placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  multiline
+                  numberOfLines={3}
+                />
+              </View>
+
+              {/* Nutrition Info */}
+              <Text
+                className={`text-lg font-bold mb-3 ${isDark ? "text-white" : "text-gray-900"}`}
               >
-                <Plus size={20} color="#10b981" />
-                <Text style={styles.previewAddButtonText}>Add More Photos</Text>
-              </TouchableOpacity>
-            )}
+                Nutrition Information
+              </Text>
 
-            <TouchableOpacity
-              style={[
-                styles.previewAnalyzeButton,
-                isAnalyzing && styles.previewAnalyzeButtonDisabled,
-              ]}
-              onPress={analyzeImagesHandler}
-              disabled={isAnalyzing}
-            >
-              {isAnalyzing ? (
-                <>
-                  <ActivityIndicator color="#fff" size="small" />
-                  <Text style={styles.previewAnalyzeButtonText}>
-                    Analyzing & Getting Nutrition...
+              <View className="flex-row flex-wrap gap-3 mb-4">
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Calories
                   </Text>
-                </>
-              ) : (
-                <>
-                  <Eye size={20} color="#fff" />
-                  <Text style={styles.previewAnalyzeButtonText}>
-                    Analyze {capturedImages.length} Image
-                    {capturedImages.length > 1 ? "s" : ""}
+                  <TextInput
+                    value={editForm.total_calories}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_calories: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Protein (g)
                   </Text>
-                </>
-              )}
-            </TouchableOpacity>
+                  <TextInput
+                    value={editForm.total_protein}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_protein: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Carbs (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_carbs}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_carbs: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Fat (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_fat}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_fat: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Fiber (g)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_fiber}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_fiber: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+
+                <View className="flex-1 min-w-[45%]">
+                  <Text
+                    className={`text-sm font-medium mb-2 ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                  >
+                    Sodium (mg)
+                  </Text>
+                  <TextInput
+                    value={editForm.total_sodium}
+                    onChangeText={(text) =>
+                      setEditForm({ ...editForm, total_sodium: text })
+                    }
+                    keyboardType="numeric"
+                    className={`${isDark ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} px-4 py-3 rounded-lg`}
+                    placeholder="0"
+                    placeholderTextColor={isDark ? "#6b7280" : "#9ca3af"}
+                  />
+                </View>
+              </View>
+
+              {/* Action Buttons */}
+              <View className="flex-row gap-3 mt-6 mb-4">
+                <TouchableOpacity
+                  onPress={handleDeleteMeal}
+                  className={`flex-1 py-3 rounded-lg flex-row items-center justify-center gap-2 ${isDark ? "bg-red-900/30" : "bg-red-100"}`}
+                >
+                  <Trash2 size={18} color={isDark ? "#fca5a5" : "#dc2626"} />
+                  <Text
+                    className={`font-semibold ${isDark ? "text-red-400" : "text-red-600"}`}
+                  >
+                    Delete
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={hasChanges ? handleSaveMeal : closeEditModal}
+                  disabled={isSaving}
+                  className={`flex-1 py-3 rounded-lg flex-row items-center justify-center gap-2 ${
+                    hasChanges
+                      ? "bg-green-600"
+                      : isDark
+                        ? "bg-gray-700"
+                        : "bg-gray-200"
+                  }`}
+                >
+                  {isSaving ? (
+                    <ActivityIndicator color="white" />
+                  ) : hasChanges ? (
+                    <>
+                      <Save size={18} color="white" />
+                      <Text className="text-white font-semibold">
+                        Save Changes
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <X size={18} color={isDark ? "#d1d5db" : "#6b7280"} />
+                      <Text
+                        className={`font-semibold ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                      >
+                        Cancel
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  const renderImageModal = () => (
+    <Modal
+      visible={!!selectedImage}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setSelectedImage(null)}
+    >
+      <View className="flex-1 bg-black/90 justify-center items-center">
+        <TouchableOpacity
+          className="absolute top-12 right-4 z-10 bg-white/20 rounded-full p-2"
+          onPress={() => setSelectedImage(null)}
+        >
+          <X size={24} color="white" />
+        </TouchableOpacity>
+        {selectedImage && (
+          <View className="w-full h-4/5 px-4">
+            <Image
+              source={{ uri: selectedImage.url }}
+              className="w-full h-full"
+              resizeMode="contain"
+            />
+            <Text className="text-white text-center mt-4 text-lg font-semibold">
+              {selectedImage.name}
+            </Text>
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+
+  const chartConfig = {
+    backgroundColor: isDark ? "#1f2937" : "#ffffff",
+    backgroundGradientFrom: isDark ? "#1f2937" : "#ffffff",
+    backgroundGradientTo: isDark ? "#1f2937" : "#ffffff",
+    decimalPlaces: 0,
+    color: (opacity = 1) => `rgba(34, 197, 94, ${opacity})`,
+    labelColor: (opacity = 1) =>
+      isDark ? `rgba(229, 231, 235, ${opacity})` : `rgba(0, 0, 0, ${opacity})`,
+    style: { borderRadius: 16 },
+    propsForDots: { r: "4", strokeWidth: "2", stroke: "#22c55e" },
+  };
+
+  if (!session?.user) {
+    return (
+      <SafeAreaView className={`flex-1 ${isDark ? "bg-gray-950" : "bg-white"}`}>
+        <View className="flex-1 justify-center items-center">
+          <Text
+            className={`text-lg ${isDark ? "text-gray-300" : "text-gray-700"}`}
+          >
+            Please log in
+          </Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // Camera View
-  return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>
-          Nutra<Text style={styles.headerTitleGreen}>Smart</Text>
-        </Text>
-      </View>
-
-      {/* Camera */}
-      <CameraView ref={cameraRef} style={styles.camera} facing={facing}>
-        <View style={styles.cameraOverlay}>
-          {/* Top Controls */}
-          <View style={styles.topControls}>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={toggleCameraFacing}
-            >
-              <FlipHorizontal size={28} color="#fff" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Bottom Controls */}
-          <View style={styles.bottomControls}>
-            {/* Gallery Button */}
-            <TouchableOpacity style={styles.galleryButton} onPress={pickImage}>
-              <Upload size={28} color="#fff" />
-            </TouchableOpacity>
-
-            {/* Capture Button */}
-            <TouchableOpacity
-              style={styles.captureButton}
-              onPress={takePicture}
-            >
-              <View style={styles.captureButtonInner} />
-            </TouchableOpacity>
-
-            {/* Counter */}
-            <View style={styles.counterContainer}>
-              <Text style={styles.counterText}>{capturedImages.length}/5</Text>
-            </View>
-          </View>
-        </View>
-      </CameraView>
+  const LegendItem = ({
+    color,
+    label,
+    isDark,
+  }: {
+    color: string;
+    label: string;
+    isDark: boolean;
+  }) => (
+    <View className="flex-row items-center px-5">
+      <View
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: 2,
+          backgroundColor: color,
+          marginRight: 6,
+        }}
+      />
+      <Text className={`text-xs ${isDark ? "text-gray-300" : "text-gray-700"}`}>
+        {label}
+      </Text>
     </View>
   );
-}
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#fff",
-  },
-  permissionContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
-    backgroundColor: "#fff",
-  },
-  permissionText: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginTop: 20,
-    color: "#000",
-  },
-  permissionSubtext: {
-    fontSize: 14,
-    color: "#666",
-    textAlign: "center",
-    marginTop: 10,
-    marginBottom: 30,
-  },
-  permissionButton: {
-    backgroundColor: "#10b981",
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: 10,
-  },
-  permissionButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  // Preview Screen Styles
-  previewScreenContainer: {
-    flex: 1,
-    backgroundColor: "#fff",
-  },
-  previewHeader: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e7eb",
-    backgroundColor: "#fff",
-  },
-  previewBackButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 12,
-  },
-  previewBackText: {
-    fontSize: 16,
-    color: "#000",
-    fontWeight: "500",
-  },
-  previewTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#000",
-  },
-  previewScrollView: {
-    flex: 1,
-  },
-  previewGrid: {
-    padding: 16,
-    gap: 16,
-  },
-  previewImageCard: {
-    width: "100%",
-    aspectRatio: 4 / 3,
-    borderRadius: 12,
-    overflow: "hidden",
-    backgroundColor: "#f3f4f6",
-    marginBottom: 16,
-    position: "relative",
-  },
-  previewImageLarge: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "cover",
-  },
-  previewRemoveButton: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(239, 68, 68, 0.9)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  previewImageNumber: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  previewImageNumberText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "bold",
-  },
-  previewActions: {
-    padding: 16,
-    backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderTopColor: "#e5e7eb",
-    gap: 12,
-  },
-  previewAddButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: "#10b981",
-    backgroundColor: "#fff",
-  },
-  previewAddButtonText: {
-    color: "#10b981",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  previewAnalyzeButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 16,
-    borderRadius: 10,
-    backgroundColor: "#10b981",
-  },
-  previewAnalyzeButtonDisabled: {
-    opacity: 0.6,
-  },
-  previewAnalyzeButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  header: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
-    paddingTop: 60,
-    paddingBottom: 20,
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.3)",
-  },
-  headerTitle: {
-    fontSize: 32,
-    fontWeight: "600",
-    color: "#fff",
-  },
-  headerTitleGreen: {
-    color: "#10b981",
-  },
-  camera: {
-    flex: 1,
-  },
-  cameraOverlay: {
-    flex: 1,
-    backgroundColor: "transparent",
-  },
-  topControls: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    padding: 20,
-    paddingTop: 120,
-  },
-  iconButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  bottomControls: {
-    position: "absolute",
-    bottom: 40,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    paddingHorizontal: 40,
-  },
-  galleryButton: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  captureButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.5)",
-  },
-  captureButtonInner: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#fff",
-  },
-  counterContainer: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  counterText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  previewContainer: {
-    position: "absolute",
-    bottom: 150,
-    left: 0,
-    right: 0,
-    height: 100,
-    paddingHorizontal: 10,
-  },
-  previewImageContainer: {
-    width: 80,
-    height: 80,
-    marginHorizontal: 5,
-    borderRadius: 10,
-    overflow: "hidden",
-    position: "relative",
-  },
-  previewImage: {
-    width: "100%",
-    height: "100%",
-  },
-  uploadingOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  removeButton: {
-    position: "absolute",
-    top: 5,
-    right: 5,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "rgba(0,0,0,0.7)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  analyzeContainer: {
-    position: "absolute",
-    bottom: 20,
-    left: 20,
-    right: 20,
-  },
-  analyzeButton: {
-    backgroundColor: "#10b981",
-    paddingVertical: 16,
-    borderRadius: 12,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8,
-  },
-  analyzeButtonDisabled: {
-    opacity: 0.7,
-  },
-  analyzeButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  // Results styles
-  resultsContainer: {
-    flex: 1,
-    backgroundColor: "#f9fafb",
-  },
-  resultsHeader: {
-    padding: 16,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#e5e7eb",
-  },
-  backButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  backButtonText: {
-    fontSize: 16,
-    color: "#000",
-    fontWeight: "500",
-  },
-  resultsTitle: {
-    padding: 16,
-  },
-  resultsTitleText: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: "#000",
-  },
-  nutritionSummaryCard: {
-    margin: 16,
-    padding: 16,
-    backgroundColor: "#dbeafe",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#93c5fd",
-  },
-  summaryTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#166534",
-    marginBottom: 4,
-  },
-  summarySubtitle: {
-    fontSize: 14,
-    color: "#059669",
-    marginBottom: 16,
-  },
-  nutritionGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  nutritionItem: {
-    flex: 1,
-    minWidth: "30%",
-    alignItems: "center",
-    padding: 12,
-    backgroundColor: "#fff",
-    borderRadius: 8,
-  },
-  nutritionValue: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#166534",
-  },
-  nutritionLabel: {
-    fontSize: 12,
-    color: "#059669",
-    marginTop: 4,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#000",
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 12,
-  },
-  imageCard: {
-    margin: 16,
-    marginTop: 0,
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  imageCardHeader: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
-  },
-  imageCardHeaderContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  thumbnailImage: {
-    width: 64,
-    height: 64,
-    borderRadius: 8,
-  },
-  imageCardHeaderText: {
-    flex: 1,
-  },
-  imageCardTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#000",
-  },
-  imageCardSubtitle: {
-    fontSize: 14,
-    color: "#6b7280",
-    marginTop: 4,
-  },
-  imageCardContent: {
-    padding: 16,
-    gap: 16,
-  },
-  imageNutritionCard: {
-    padding: 12,
-    backgroundColor: "#ede9fe",
-    borderRadius: 8,
-  },
-  cardSubtitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#000",
-    marginBottom: 12,
-  },
-  smallNutritionItem: {
-    flex: 1,
-    minWidth: "22%",
-    alignItems: "center",
-    padding: 8,
-    backgroundColor: "#fff",
-    borderRadius: 6,
-  },
-  smallNutritionValue: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#1e40af",
-  },
-  smallNutritionLabel: {
-    fontSize: 10,
-    color: "#3b82f6",
-    marginTop: 2,
-  },
-  descriptionCard: {
-    padding: 12,
-    backgroundColor: "#f9fafb",
-    borderRadius: 8,
-  },
-  descriptionText: {
-    fontSize: 14,
-    color: "#4b5563",
-    lineHeight: 20,
-  },
-  confidenceText: {
-    fontSize: 12,
-    color: "#9ca3af",
-    marginTop: 8,
-  },
-  dishesSection: {
-    gap: 12,
-  },
-  dishCard: {
-    padding: 12,
-    backgroundColor: "#f9fafb",
-    borderRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: "#10b981",
-  },
-  dishHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  dishName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#000",
-    textTransform: "capitalize",
-  },
-  dishServing: {
-    fontSize: 12,
-    color: "#6b7280",
-    backgroundColor: "#fff",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  dishNutrition: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  dishNutritionItem: {
-    flex: 1,
-    alignItems: "center",
-    padding: 8,
-    backgroundColor: "#ecfdf5",
-    borderRadius: 6,
-  },
-  dishNutritionValue: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#059669",
-  },
-  dishNutritionLabel: {
-    fontSize: 10,
-    color: "#10b981",
-    marginTop: 2,
-  },
-  activityCard: {
-    margin: 16,
-    padding: 16,
-    backgroundColor: "#fae8ff",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e9d5ff",
-  },
-  activityTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#7c3aed",
-    marginBottom: 4,
-  },
-  activitySubtitle: {
-    fontSize: 14,
-    color: "#a855f7",
-    marginBottom: 16,
-  },
-  activityGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  activityItem: {
-    flex: 1,
-    minWidth: "45%",
-    alignItems: "center",
-    padding: 12,
-    backgroundColor: "#fff",
-    borderRadius: 8,
-  },
-  activityValue: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#7c3aed",
-  },
-  activityLabel: {
-    fontSize: 12,
-    color: "#a855f7",
-    marginTop: 4,
-  },
-  saveButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 115,
-    paddingVertical: 10,
-    backgroundColor: "#10b981",
-    borderRadius: 8,
-    flex: 1,
-    margin: "auto",
-    marginTop: 5,
-    marginBottom: 15,
-  },
-  saveButtonDisabled: {
-    opacity: 0.6,
-  },
-  saveButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-});
+  return (
+    <SafeAreaView
+      className={`flex-1 ${isDark ? "bg-gray-950" : "bg-gray-50"}`}
+      edges={["top"]}
+    >
+      <ScrollView
+        className={`flex-1 ${isDark ? "bg-gray-950" : "bg-gray-50"}`}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {renderImageModal()}
+        {renderCalendarModal()}
+        {renderTimezoneModal()}
+
+        {/* Header */}
+        <AnimatedCard
+          className={`${isDark ? "bg-gray-900" : "bg-white"} p-6 border-b ${isDark ? "border-gray-800" : "border-gray-200"}`}
+        >
+          <Text
+            className={`text-3xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+          >
+            Dashboard
+          </Text>
+          <Text
+            className={`${isDark ? "text-gray-400" : "text-gray-600"} mt-1`}
+          >
+            Track your nutritional intake and progress
+          </Text>
+          <TouchableOpacity
+            onPress={() => setShowTimezonePicker(true)}
+            className={`mt-3 p-3 rounded-lg flex-row items-center justify-between ${isDark ? "bg-gray-800" : "bg-gray-100"}`}
+          >
+            <View className="flex-row items-center gap-2">
+              <Globe size={16} color={isDark ? "#9ca3af" : "#6b7280"} />
+              <Text
+                className={`text-sm ${isDark ? "text-gray-300" : "text-gray-700"}`}
+              >
+                {isAutoDetect ? "🌍 Auto: " : "📍 "}
+                {userTimezone}
+              </Text>
+            </View>
+            <ChevronDown size={16} color={isDark ? "#9ca3af" : "#6b7280"} />
+          </TouchableOpacity>
+        </AnimatedCard>
+
+        {/* Period Selector */}
+        <AnimatedCard
+          delay={100}
+          className={`${isDark ? "bg-gray-900" : "bg-white"} p-4 border-b ${isDark ? "border-gray-800" : "border-gray-200"}`}
+        >
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View className="flex-row gap-2">
+              {(["daily", "weekly", "monthly", "yearly"] as const).map((p) => (
+                <TouchableOpacity
+                  key={p}
+                  onPress={() => setPeriod(p)}
+                  className={`px-4 py-2 rounded-lg ${
+                    period === p
+                      ? "bg-green-600"
+                      : isDark
+                        ? "bg-gray-800"
+                        : "bg-gray-200"
+                  }`}
+                >
+                  <Text
+                    className={`capitalize font-medium ${
+                      period === p
+                        ? "text-white"
+                        : isDark
+                          ? "text-gray-300"
+                          : "text-gray-700"
+                    }`}
+                  >
+                    {p}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+
+          {/* Quick Date Range Buttons */}
+          <View className="flex-row gap-2 mt-3 flex-wrap">
+            {quickRanges.map((range) => {
+              const disabled = isRangeDisabled(range.from, new Date());
+              return (
+                <TouchableOpacity
+                  key={range.label}
+                  onPress={() =>
+                    !disabled &&
+                    setDateRange({ from: range.from, to: new Date() })
+                  }
+                  disabled={disabled}
+                  className={`px-3 py-2 rounded-lg ${
+                    disabled
+                      ? isDark
+                        ? "bg-gray-800/50"
+                        : "bg-gray-300"
+                      : isDark
+                        ? "bg-gray-800"
+                        : "bg-gray-100"
+                  }`}
+                >
+                  <Text
+                    className={`text-xs font-medium ${
+                      disabled
+                        ? isDark
+                          ? "text-gray-600"
+                          : "text-gray-400"
+                        : isDark
+                          ? "text-gray-300"
+                          : "text-gray-700"
+                    }`}
+                  >
+                    {range.label}
+                    {disabled && period === "daily"}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+
+            <TouchableOpacity
+              onPress={() => !isCustomRangeDisabled() && setShowCalendar(true)}
+              disabled={isCustomRangeDisabled()}
+              className={`px-3 py-2 rounded-lg flex-row items-center gap-1 ${
+                isCustomRangeDisabled()
+                  ? isDark
+                    ? "bg-gray-800/50"
+                    : "bg-gray-300"
+                  : isDark
+                    ? "bg-green-900/30"
+                    : "bg-green-100"
+              }`}
+            >
+              <CalendarDays
+                size={14}
+                color={
+                  isCustomRangeDisabled()
+                    ? isDark
+                      ? "#4b5563"
+                      : "#9ca3af"
+                    : "#22c55e"
+                }
+              />
+              <Text
+                className={`text-xs font-medium ${
+                  isCustomRangeDisabled()
+                    ? isDark
+                      ? "text-gray-600"
+                      : "text-gray-400"
+                    : isDark
+                      ? "text-green-400"
+                      : "text-green-700"
+                }`}
+              >
+                Custom Range
+                {isCustomRangeDisabled()}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Current Date Range Display */}
+          <View
+            className={`mt-3 p-3 ${isDark ? "bg-gray-800" : "bg-gray-50"} rounded-lg`}
+          >
+            <Text
+              className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} font-medium`}
+            >
+              {format(dateRange.from, "MMM dd, yyyy")} -{" "}
+              {format(dateRange.to, "MMM dd, yyyy")}
+            </Text>
+          </View>
+        </AnimatedCard>
+
+        {/* Summary Cards */}
+        <View className="p-4">
+          <View className="flex-row flex-wrap gap-3">
+            {/* Total Calories Card */}
+            <AnimatedCard
+              delay={150}
+              className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 flex-1 min-w-[45%] ${isDark ? "" : "shadow-sm"}`}
+            >
+              <View className="flex-row items-center gap-2 mb-2">
+                <Target size={16} color="#22c55e" />
+                <Text
+                  className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"} font-medium`}
+                >
+                  Total Calories
+                </Text>
+              </View>
+              <Text className="text-2xl font-bold text-green-600">
+                {stats.totalCalories.toLocaleString()}
+              </Text>
+              <Text
+                className={`text-xs ${isDark ? "text-gray-500" : "text-gray-500"} mt-1`}
+              >
+                Avg: {avgDailyCalories}/day
+              </Text>
+            </AnimatedCard>
+
+            {/* Meals Logged Card */}
+            <AnimatedCard
+              delay={200}
+              className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 flex-1 min-w-[45%] ${isDark ? "" : "shadow-sm"}`}
+            >
+              <View className="flex-row items-center gap-2 mb-2">
+                <Activity size={16} color="#3b82f6" />
+                <Text
+                  className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"} font-medium`}
+                >
+                  Meals Logged
+                </Text>
+              </View>
+              <Text className="text-2xl font-bold text-blue-600">
+                {stats.totalMeals}
+              </Text>
+              <Text
+                className={`text-xs ${isDark ? "text-gray-500" : "text-gray-500"} mt-1`}
+              >
+                Over {stats.daysLogged} days
+              </Text>
+            </AnimatedCard>
+
+            {/* Protein Card */}
+            <AnimatedCard
+              delay={250}
+              className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 flex-1 min-w-[45%] ${isDark ? "" : "shadow-sm"}`}
+            >
+              <View className="flex-row items-center gap-2 mb-2">
+                <TrendingUp size={16} color="#a855f7" />
+                <Text
+                  className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"} font-medium`}
+                >
+                  Protein
+                </Text>
+              </View>
+              <Text className="text-2xl font-bold text-purple-600">
+                {Math.round(stats.totalProtein)}g
+              </Text>
+              <Text
+                className={`text-xs ${isDark ? "text-gray-500" : "text-gray-500"} mt-1`}
+              >
+                Avg: {Math.round(stats.totalProtein / (stats.daysLogged || 1))}
+                g/day
+              </Text>
+            </AnimatedCard>
+
+            {/* Days Tracked Card */}
+            <AnimatedCard
+              delay={300}
+              className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 flex-1 min-w-[45%] ${isDark ? "" : "shadow-sm"}`}
+            >
+              <View className="flex-row items-center gap-2 mb-2">
+                <Clock size={16} color="#f97316" />
+                <Text
+                  className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"} font-medium`}
+                >
+                  Days Tracked
+                </Text>
+              </View>
+              <Text className="text-2xl font-bold text-orange-600">
+                {stats.daysLogged}
+              </Text>
+              <Text
+                className={`text-xs ${isDark ? "text-gray-500" : "text-gray-500"} mt-1`}
+              >
+                Keep it up!
+              </Text>
+            </AnimatedCard>
+          </View>
+        </View>
+
+        {/* Tab Selector */}
+        <AnimatedCard
+          delay={350}
+          className={`${isDark ? "bg-gray-900" : "bg-white"} border-y ${isDark ? "border-gray-800" : "border-gray-200"} px-4`}
+        >
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View className="flex-row gap-4 py-3">
+              {(["calories", "macros", "distribution", "meals"] as const).map(
+                (tab) => (
+                  <TouchableOpacity
+                    key={tab}
+                    onPress={() => setActiveTab(tab)}
+                    className={`px-4 py-2 rounded-lg ${
+                      activeTab === tab
+                        ? isDark
+                          ? "bg-green-900/30"
+                          : "bg-green-100"
+                        : "bg-transparent"
+                    }`}
+                  >
+                    <Text
+                      className={`capitalize font-medium ${
+                        activeTab === tab
+                          ? isDark
+                            ? "text-green-400"
+                            : "text-green-700"
+                          : isDark
+                            ? "text-gray-400"
+                            : "text-gray-600"
+                      }`}
+                    >
+                      {tab}
+                    </Text>
+                  </TouchableOpacity>
+                ),
+              )}
+            </View>
+          </ScrollView>
+        </AnimatedCard>
+
+        {/* Charts */}
+        <View className="p-4 pb-8">
+          {isLoading ? (
+            <View
+              className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-8 items-center`}
+            >
+              <ActivityIndicator size="large" color="#22c55e" />
+              <Text
+                className={`${isDark ? "text-gray-400" : "text-gray-600"} mt-4`}
+              >
+                Loading data...
+              </Text>
+            </View>
+          ) : (
+            <>
+              {activeTab === "calories" && (
+                <AnimatedCard
+                  delay={400}
+                  className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${isDark ? "" : "shadow-sm"}`}
+                >
+                  <Text
+                    className={`text-lg font-bold mb-2 ${isDark ? "text-white" : "text-gray-900"}`}
+                  >
+                    Daily Calorie Intake
+                  </Text>
+                  <Text
+                    className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"} mb-4`}
+                  >
+                    Track your calorie consumption over time
+                  </Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <LineChart
+                      data={formatChartData()}
+                      width={Math.max(
+                        screenWidth - 48,
+                        formatChartData().labels.length * 50,
+                      )}
+                      height={220}
+                      chartConfig={chartConfig}
+                      bezier
+                      yAxisLabel=""
+                      yAxisSuffix=""
+                      style={{ marginVertical: 8, borderRadius: 16 }}
+                    />
+                  </ScrollView>
+                </AnimatedCard>
+              )}
+
+              {activeTab === "macros" && (
+                <AnimatedCard
+                  delay={400}
+                  className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${
+                    isDark ? "" : "shadow-sm"
+                  }`}
+                >
+                  <Text
+                    className={`text-lg font-bold mb-2 ${
+                      isDark ? "text-white" : "text-gray-900"
+                    }`}
+                  >
+                    Macronutrient Breakdown
+                  </Text>
+
+                  <Text
+                    className={`text-sm ${
+                      isDark ? "text-gray-400" : "text-gray-600"
+                    } mb-4`}
+                  >
+                    Daily macro totals (stacked)
+                  </Text>
+
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <BarChart
+                      stackData={formatMacroChartData()}
+                      barWidth={42}
+                      spacing={18}
+                      height={220}
+                      rulesType="solid"
+                      rulesColor={isDark ? "#374151" : "#e5e7eb"}
+                      rulesThickness={1}
+                      noOfSections={4}
+                      hideYAxisText
+                      xAxisLabelTextStyle={{
+                        color: isDark ? "#9ca3af" : "#6b7280",
+                        fontSize: 12,
+                      }}
+                      yAxisThickness={0}
+                      xAxisThickness={0}
+                      disablePress
+                      showValuesAsTopLabel={false} // 🔥 THIS actually hides numbers
+                      backgroundColor="transparent"
+                    />
+                  </ScrollView>
+
+                  {/* Legend */}
+                  <View className="flex-row justify-center mt-4 space-x-4">
+                    <LegendItem
+                      color="#3b82f6"
+                      label="Protein"
+                      isDark={isDark}
+                    />
+                    <LegendItem color="#22c55e" label="Carbs" isDark={isDark} />
+                    <LegendItem color="#f59e0b" label="Fat" isDark={isDark} />
+                  </View>
+                </AnimatedCard>
+              )}
+
+              {activeTab === "distribution" && (
+                <AnimatedCard
+                  delay={400}
+                  className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${isDark ? "" : "shadow-sm"}`}
+                >
+                  <Text
+                    className={`text-lg font-bold mb-2 ${isDark ? "text-white" : "text-gray-900"}`}
+                  >
+                    Macronutrient Distribution
+                  </Text>
+                  <Text
+                    className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"} mb-4`}
+                  >
+                    Overall breakdown by calories
+                  </Text>
+                  <View className="items-center">
+                    <PieChart
+                      data={getPieChartData()}
+                      width={screenWidth - 48}
+                      height={220}
+                      chartConfig={chartConfig}
+                      accessor="population"
+                      backgroundColor="transparent"
+                      paddingLeft="15"
+                      absolute
+                    />
+                  </View>
+                </AnimatedCard>
+              )}
+
+              {activeTab === "meals" && (
+                <AnimatedCard
+                  delay={400}
+                  className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${isDark ? "" : "shadow-sm"}`}
+                >
+                  {activeTab === "meals" && (
+                    <AnimatedCard
+                      delay={400}
+                      className={`${isDark ? "bg-gray-900" : "bg-white"} rounded-xl p-4 ${isDark ? "" : "shadow-sm"}`}
+                    >
+                      <View className="flex-row items-center gap-2 mb-6">
+                        <Utensils size={20} color="#22c55e" />
+                        <Text
+                          className={`text-lg font-bold margin ${isDark ? "text-white" : "text-gray-900"}`}
+                        >
+                          All Meals ({meals.length})
+                        </Text>
+                      </View>
+
+                      {meals.length > 0 ? (
+                        <View className="gap-3">
+                          {meals.map((meal, index) => (
+                            <TouchableOpacity
+                              key={meal.id}
+                              onPress={() => openEditModal(meal)}
+                              activeOpacity={0.7}
+                              style={{ elevation: 4 }}
+                            >
+                              <AnimatedCard
+                                delay={index * 30}
+                                className={`flex-row rounded-2xl overflow-hidden ${isDark ? "bg-gray-800/50" : "bg-white"} ${isDark ? "" : "shadow-lg shadow-gray-200/50"}`}
+                                style={{
+                                  borderWidth: 1,
+                                  borderColor: isDark ? "#1f2937" : "#f3f4f6",
+                                }}
+                              >
+                                {/* Image Section */}
+                                <View className="relative">
+                                  {meal.image_url ? (
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        setSelectedImage({
+                                          url: meal.image_url!,
+                                          name: meal.meal_name,
+                                        })
+                                      }
+                                      activeOpacity={0.9}
+                                      className="relative"
+                                    >
+                                      <Image
+                                        source={{ uri: meal.image_url }}
+                                        className="w-24 h-28"
+                                      />
+                                      <View className="absolute inset-0 items-center justify-center bg-black/30">
+                                        <View className="bg-white/20 rounded-full p-2.5">
+                                          <Eye
+                                            size={18}
+                                            color="white"
+                                            strokeWidth={2.5}
+                                          />
+                                        </View>
+                                      </View>
+                                    </TouchableOpacity>
+                                  ) : (
+                                    <View
+                                      className={`w-24 h-28 items-center justify-center ${isDark ? "bg-gray-700" : "bg-gray-100"}`}
+                                    >
+                                      <Utensils
+                                        size={28}
+                                        color={isDark ? "#4b5563" : "#d1d5db"}
+                                        strokeWidth={1.5}
+                                      />
+                                    </View>
+                                  )}
+                                </View>
+
+                                {/* Content Section */}
+                                <View className="flex-1 px-4 py-3.5 justify-between">
+                                  <View>
+                                    <Text
+                                      className={`text-base font-bold mb-1.5 ${isDark ? "text-white" : "text-gray-900"}`}
+                                      numberOfLines={1}
+                                    >
+                                      {meal.meal_name}
+                                    </Text>
+
+                                    <View className="flex-row items-center gap-2 mb-2">
+                                      <Text
+                                        className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                      >
+                                        {formatDateTimeLocal(
+                                          meal.logged_at,
+                                          "MMM dd, HH:mm",
+                                        )}
+                                      </Text>
+                                      <View
+                                        className={`w-0.5 h-3 rounded-full ${isDark ? "bg-gray-600" : "bg-gray-300"}`}
+                                      />
+                                      <View
+                                        className={`px-2.5 py-1 rounded-full ${
+                                          MEAL_TYPE_COLORS[
+                                            meal.meal_type.toLowerCase() as keyof typeof MEAL_TYPE_COLORS
+                                          ]?.[isDark ? "dark" : "light"] ||
+                                          (isDark
+                                            ? "bg-gray-700/50"
+                                            : "bg-gray-100")
+                                        }`}
+                                      >
+                                        <Text
+                                          className={`text-xs font-medium ${
+                                            MEAL_TYPE_TEXT_COLORS[
+                                              meal.meal_type.toLowerCase() as keyof typeof MEAL_TYPE_TEXT_COLORS
+                                            ]?.[isDark ? "dark" : "light"] ||
+                                            (isDark
+                                              ? "text-gray-300"
+                                              : "text-gray-800")
+                                          }`}
+                                        >
+                                          {meal.meal_type}
+                                        </Text>
+                                      </View>
+                                    </View>
+
+                                    <View className="flex-row gap-1.5">
+                                      <View
+                                        className={`flex-row items-center gap-1 px-2 py-1 rounded-full ${isDark ? "bg-gray-700/50" : "bg-gray-100"}`}
+                                      >
+                                        <Text
+                                          className={`text-[10px] font-semibold ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        >
+                                          P
+                                        </Text>
+                                        <Text
+                                          className={`text-xs font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                                        >
+                                          {Math.round(meal.total_protein)}
+                                        </Text>
+                                      </View>
+                                      <View
+                                        className={`flex-row items-center gap-1 px-2 py-1 rounded-full ${isDark ? "bg-gray-700/50" : "bg-gray-100"}`}
+                                      >
+                                        <Text
+                                          className={`text-[10px] font-semibold ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        >
+                                          C
+                                        </Text>
+                                        <Text
+                                          className={`text-xs font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                                        >
+                                          {Math.round(meal.total_carbs)}
+                                        </Text>
+                                      </View>
+                                      <View
+                                        className={`flex-row items-center gap-1 px-2 py-1 rounded-full ${isDark ? "bg-gray-700/50" : "bg-gray-100"}`}
+                                      >
+                                        <Text
+                                          className={`text-[10px] font-semibold ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        >
+                                          F
+                                        </Text>
+                                        <Text
+                                          className={`text-xs font-bold ${isDark ? "text-white" : "text-gray-900"}`}
+                                        >
+                                          {Math.round(meal.total_fat)}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                  </View>
+                                </View>
+
+                                {/* Calories & Edit Column */}
+                                <View className="items-end justify-between py-3.5 pr-4">
+                                  <View className="items-end">
+                                    <Text className="text-2xl font-black text-green-500 tracking-tight">
+                                      {Math.round(meal.total_calories)}
+                                    </Text>
+                                    <Text
+                                      className={`text-[10px] font-medium uppercase tracking-wider ${isDark ? "text-gray-500" : "text-gray-400"}`}
+                                    >
+                                      kcal
+                                    </Text>
+                                  </View>
+                                </View>
+                              </AnimatedCard>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      ) : (
+                        <View className="items-center py-12">
+                          <Utensils
+                            size={48}
+                            color={isDark ? "#4b5563" : "#d1d5db"}
+                          />
+                          <Text
+                            className={`${isDark ? "text-gray-400" : "text-gray-500"} mt-4 text-lg font-medium`}
+                          >
+                            No meals found
+                          </Text>
+                          <Text
+                            className={`text-sm ${isDark ? "text-gray-600" : "text-gray-400"} mt-1`}
+                          >
+                            Try adjusting your date range
+                          </Text>
+                        </View>
+                      )}
+                    </AnimatedCard>
+                  )}
+                </AnimatedCard>
+              )}
+            </>
+          )}
+        </View>
+      </ScrollView>
+      {renderEditMealModal()}
+    </SafeAreaView>
+  );
+}
