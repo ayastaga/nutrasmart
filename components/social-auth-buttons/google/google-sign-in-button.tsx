@@ -1,91 +1,84 @@
 import { supabase } from "@/lib/supabase";
 import { useEffect } from "react";
-import { TouchableOpacity } from "react-native";
+import { TouchableOpacity, Platform } from "react-native";
 
 import { expo } from "@/app.json";
 import { Text } from "@react-navigation/elements";
 import { Image } from "expo-image";
 import * as WebBrowser from "expo-web-browser";
+import * as Linking from "expo-linking";
 
 WebBrowser.maybeCompleteAuthSession();
 
 export default function GoogleSignInButton() {
-  function extractParamsFromUrl(url: string) {
-    const parsedUrl = new URL(url);
-    const hash = parsedUrl.hash.substring(1); // Remove the leading '#'
-    const params = new URLSearchParams(hash);
-
-    return {
-      access_token: params.get("access_token"),
-      expires_in: parseInt(params.get("expires_in") || "0"),
-      refresh_token: params.get("refresh_token"),
-      token_type: params.get("token_type"),
-      provider_token: params.get("provider_token"),
-      code: params.get("code"),
-    };
-  }
-
   async function onSignInButtonPress() {
     console.debug("onSignInButtonPress - start");
+
+    // Create the redirect URL using expo-linking
+    const redirectUrl = Linking.createURL("google-auth");
+    console.debug("Redirect URL:", redirectUrl);
+
     const res = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${expo.scheme}://google-auth`,
-        queryParams: { prompt: "consent" },
+        redirectTo: redirectUrl,
+        queryParams: {
+          access_type: "offline",
+          prompt: "consent",
+        },
         skipBrowserRedirect: true,
       },
     });
 
     const googleOAuthUrl = res.data.url;
-
     if (!googleOAuthUrl) {
       console.error("no oauth url found!");
       return;
     }
 
+    console.debug("Opening OAuth URL:", googleOAuthUrl);
+
     const result = await WebBrowser.openAuthSessionAsync(
       googleOAuthUrl,
-      `${expo.scheme}://google-auth`,
-      { showInRecents: true },
-    ).catch((err) => {
-      console.error("onSignInButtonPress - openAuthSessionAsync - error", {
-        err,
-      });
-      console.log(err);
-    });
+      redirectUrl,
+    );
 
-    console.debug("onSignInButtonPress - openAuthSessionAsync - result", {
-      result,
-    });
+    console.debug("WebBrowser Result:", result);
 
-    if (result && result.type === "success") {
-      console.debug("onSignInButtonPress - openAuthSessionAsync - success");
-      const params = extractParamsFromUrl(result.url);
-      console.debug("onSignInButtonPress - openAuthSessionAsync - success", {
-        params,
-      });
+    if (result.type === "success") {
+      const url = result.url;
+      console.debug("Success URL:", url);
 
-      if (params.access_token && params.refresh_token) {
-        console.debug("onSignInButtonPress - setSession");
-        const { data, error } = await supabase.auth.setSession({
-          access_token: params.access_token,
-          refresh_token: params.refresh_token,
-        });
-        console.debug("onSignInButtonPress - setSession - success", {
-          data,
-          error,
-        });
-        return;
-      } else {
-        console.error("onSignInButtonPress - setSession - failed");
-        // sign in/up failed
+      // Parse the URL hash parameters
+      const urlParts = url.split("#");
+      if (urlParts.length > 1) {
+        const params = new URLSearchParams(urlParts[1]);
+        const access_token = params.get("access_token");
+        const refresh_token = params.get("refresh_token");
+
+        if (access_token && refresh_token) {
+          console.debug("Setting session with tokens");
+          const { data, error } = await supabase.auth.setSession({
+            access_token,
+            refresh_token,
+          });
+
+          if (error) {
+            console.error("Error setting session:", error);
+          } else {
+            console.log("Session set successfully:", data.session?.user?.email);
+          }
+        } else {
+          console.error("No tokens found in URL");
+        }
       }
+    } else if (result.type === "cancel") {
+      console.log("User cancelled the auth flow");
     } else {
-      console.error("onSignInButtonPress - openAuthSessionAsync - failed");
+      console.log("Auth flow failed:", result);
     }
   }
 
-  // to warm up the browser
   useEffect(() => {
     WebBrowser.warmUpAsync();
 
@@ -111,7 +104,7 @@ export default function GoogleSignInButton() {
         shadowOffset: { width: 0, height: 1 },
         shadowOpacity: 0.1,
         shadowRadius: 2,
-        elevation: 2, // For Android shadow
+        elevation: 2,
       }}
       activeOpacity={0.8}
     >
@@ -125,7 +118,6 @@ export default function GoogleSignInButton() {
         style={{
           fontSize: 16,
           color: "#757575",
-          fontFamily: "Roboto-Regular", // Assuming Roboto is available; install via expo-google-fonts or similar if needed
           fontWeight: "500",
         }}
       >
