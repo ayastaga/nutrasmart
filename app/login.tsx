@@ -61,7 +61,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <ThemedView className="flex-1 bg-white">
+    <ThemedView className="flex-1 bg-white font-['PPNeueMontreal']">
       <Stack.Screen options={{ headerShown: false }} />
       <SafeAreaView className="flex-1">
         <KeyboardAvoidingView
@@ -77,7 +77,7 @@ export default function LoginScreen() {
             <View className="mb-10">
               <ThemedText
                 type="title"
-                className="text-4xl mt-20 font-extrabold text-gray-900 tracking-tight"
+                className="text-4xl  mt-20 font-extrabold text-gray-900 tracking-tight"
               >
                 Welcome Back
               </ThemedText>

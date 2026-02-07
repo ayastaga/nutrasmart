@@ -8,7 +8,11 @@ module.exports = {
   ],
   presets: [require("nativewind/preset")],
   theme: {
-    extend: {},
+    extend: {
+      fontFamily: {
+        pp: ["PPNeueMontreal", "sans-serif"],
+      },
+    },
   },
   plugins: [],
 };

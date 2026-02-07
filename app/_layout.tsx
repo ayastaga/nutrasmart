@@ -115,18 +115,13 @@ function RootNavigator() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-
-  {
-    /* 
   const [loaded] = useFonts({
-    PPMontreal: require("../assets/fonts/ppneuemontreal-book.otf"),
+    PPNeueMontreal: require("../assets/fonts/ppneuemontreal-medium.otf"),
   });
 
   if (!loaded) {
     // Async font loading only occurs in development.
     return null;
-  }
-    */
   }
 
   return (

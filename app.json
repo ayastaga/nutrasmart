@@ -17,7 +17,9 @@
         },
         "CFBundleURLTypes": [
           {
-            "CFBundleURLSchemes": ["nutrasmart"]
+            "CFBundleURLSchemes": [
+              "nutrasmart"
+            ]
           }
         ]
       }
@@ -49,7 +51,10 @@
               "scheme": "nutrasmart"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -70,7 +75,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,
