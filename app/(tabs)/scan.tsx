@@ -9,6 +9,7 @@ import {
   Alert,
   Dimensions,
   StyleSheet,
+  Animated,
 } from "react-native";
 import { SafeAreaView, SafeAreaProvider } from "react-native-safe-area-context";
 import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
@@ -51,10 +52,17 @@ export default function HomeScreen() {
     null,
   );
   const [showResults, setShowResults] = useState(false);
-  const [showPreview, setShowPreview] = useState(false); // Preview mode before analysis
+  const [showPreview, setShowPreview] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Scanning animation state
+  const [showScanning, setShowScanning] = useState(false);
+  const [currentScanningIndex, setCurrentScanningIndex] = useState(0);
+  const scanLinePosition = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
   const handleSaveToProfile = async () => {
     if (!analysisResult || analysisResult.images.length === 0) return;
@@ -62,13 +70,11 @@ export default function HomeScreen() {
     setIsSaving(true);
 
     try {
-      // For simplicity, we'll save the first image as a meal
-      // You can modify this to save all images or let user choose
       const imageAnalysis = analysisResult.images[0];
 
       const mealData: MealData = {
         mealName: imageAnalysis.description.substring(0, 50) || "Meal",
-        mealType: "snack", // You can add UI to let user select meal type
+        mealType: "snack",
         imageUrl: imageAnalysis.imageUrl,
         imageKey: imageAnalysis.imageKey,
         description: imageAnalysis.description,
@@ -89,7 +95,6 @@ export default function HomeScreen() {
         {
           text: "OK",
           onPress: () => {
-            // Navigate to profile or reset
             resetAnalysis();
           },
         },
@@ -119,6 +124,70 @@ export default function HomeScreen() {
       }
     })();
   }, []);
+
+  // Scanning animation effect - keeps cycling through images while analyzing
+  useEffect(() => {
+    if (showScanning && capturedImages.length > 0) {
+      // Fade in
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+
+      // Scan line animation (continuous loop)
+      const scanAnimation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanLinePosition, {
+            toValue: 1,
+            duration: 1500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(scanLinePosition, {
+            toValue: 0,
+            duration: 1500,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+
+      // Pulse animation for the corner brackets
+      const pulseAnimation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+
+      scanAnimation.start();
+      pulseAnimation.start();
+
+      // Cycle through images every 2 seconds while analysis is ongoing
+      const timer = setTimeout(() => {
+        if (isAnalyzing) {
+          // Move to next image (loop back to start if at end)
+          setCurrentScanningIndex((prev) =>
+            prev < capturedImages.length - 1 ? prev + 1 : 0,
+          );
+          // Don't reset scanLinePosition - let it continue looping
+        }
+      }, 2000);
+
+      return () => {
+        clearTimeout(timer);
+        scanAnimation.stop();
+        pulseAnimation.stop();
+      };
+    }
+  }, [showScanning, currentScanningIndex, isAnalyzing]);
 
   if (!permission) {
     return <View style={styles.container} />;
@@ -163,8 +232,9 @@ export default function HomeScreen() {
           quality: 0.8,
         });
         if (photo?.uri) {
+          // Add to captured images and show preview
           setCapturedImages((prev) => [...prev, { uri: photo.uri }]);
-          setShowPreview(true); // Show preview mode
+          setShowPreview(true);
         }
       } catch (error) {
         console.error("Error taking picture:", error);
@@ -193,7 +263,7 @@ export default function HomeScreen() {
       if (!result.canceled) {
         const newImages = result.assets.map((asset) => ({ uri: asset.uri }));
         setCapturedImages((prev) => [...prev, ...newImages].slice(0, 5));
-        setShowPreview(true); // Show preview mode
+        setShowPreview(true);
       }
     } catch (error) {
       console.error("Error picking image:", error);
@@ -204,7 +274,6 @@ export default function HomeScreen() {
   const removeImage = (index: number) => {
     setCapturedImages((prev) => {
       const updated = prev.filter((_, i) => i !== index);
-      // If no images left, hide preview
       if (updated.length === 0) {
         setShowPreview(false);
       }
@@ -218,16 +287,18 @@ export default function HomeScreen() {
       return;
     }
 
+    // Start scanning animation
+    setShowScanning(true);
+    setCurrentScanningIndex(0);
+    setShowPreview(false);
     setIsAnalyzing(true);
 
     try {
       console.log("Starting upload and analysis...");
 
-      // Upload all images first
       const uploadPromises = capturedImages.map(async (img) => {
         try {
           if (img.uploadedFile) {
-            // Already uploaded
             return img.uploadedFile;
           }
 
@@ -235,7 +306,6 @@ export default function HomeScreen() {
           const uploadedFile = await uploadImage(img.uri);
           console.log("Upload success:", uploadedFile);
 
-          // Update state with uploaded file
           setCapturedImages((prev) =>
             prev.map((i) => (i.uri === img.uri ? { ...i, uploadedFile } : i)),
           );
@@ -250,7 +320,6 @@ export default function HomeScreen() {
       const uploadedFiles = await Promise.all(uploadPromises);
       console.log("All images uploaded:", uploadedFiles.length);
 
-      // Now analyze the uploaded images
       console.log("Starting AI analysis...");
       const result = await analyzeImages(
         uploadedFiles.map((file) => ({
@@ -263,10 +332,13 @@ export default function HomeScreen() {
       console.log("Analysis complete:", result);
 
       setAnalysisResult(result);
-      setShowPreview(false); // Hide preview
-      setShowResults(true); // Show results
+
+      // Results are ready - stop animation and show results
+      setShowScanning(false);
+      setShowResults(true);
     } catch (error) {
       console.error("Analysis error:", error);
+      setShowScanning(false);
       Alert.alert(
         "Analysis Failed",
         error instanceof Error
@@ -279,7 +351,6 @@ export default function HomeScreen() {
   };
 
   const resetAnalysis = async () => {
-    // Delete temp images if not saved
     if (analysisResult && analysisResult.images.length > 0) {
       const tempKeys = analysisResult.images
         .map((img) => img.imageKey)
@@ -300,6 +371,82 @@ export default function HomeScreen() {
   const formatNutrient = (value: number, unit: string = "g") => {
     return `${Math.round(value * 10) / 10}${unit}`;
   };
+
+  // Scanning Animation Overlay
+  if (showScanning && capturedImages.length > 0) {
+    const scanLineTranslateY = scanLinePosition.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, SCREEN_HEIGHT * 0.6],
+    });
+
+    const currentImage = capturedImages[currentScanningIndex];
+
+    return (
+      <View style={styles.container}>
+        <Animated.View style={[styles.scanningOverlay, { opacity: fadeAnim }]}>
+          <View style={styles.scanningContainer}>
+            <Image
+              source={{ uri: currentImage.uri }}
+              style={styles.scanningImage}
+            />
+
+            {/* Corner brackets */}
+            <Animated.View
+              style={[
+                styles.scanCornerTL,
+                { transform: [{ scale: pulseAnim }] },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.scanCornerTR,
+                { transform: [{ scale: pulseAnim }] },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.scanCornerBL,
+                { transform: [{ scale: pulseAnim }] },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.scanCornerBR,
+                { transform: [{ scale: pulseAnim }] },
+              ]}
+            />
+
+            {/* Scanning line */}
+            <Animated.View
+              style={[
+                styles.scanLine,
+                { transform: [{ translateY: scanLineTranslateY }] },
+              ]}
+            />
+
+            {/* Grid overlay */}
+            <View style={styles.gridOverlay}>
+              {[...Array(8)].map((_, i) => (
+                <View key={`h-${i}`} style={styles.gridLineHorizontal} />
+              ))}
+              {[...Array(6)].map((_, i) => (
+                <View key={`v-${i}`} style={styles.gridLineVertical} />
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.scanningTextContainer}>
+            <ActivityIndicator size="small" color="#ffff" />
+            <Text style={styles.scanningText}>
+              Analyzing image {currentScanningIndex + 1} of{" "}
+              {capturedImages.length}...
+            </Text>
+            <Text style={styles.scanningSubtext}>Detecting food items</Text>
+          </View>
+        </Animated.View>
+      </View>
+    );
+  }
 
   // Results View
   if (showResults && analysisResult) {
@@ -377,7 +524,7 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {/* ADD SAVE TO PROFILE BUTTON */}
+          {/* Save to Profile Button */}
           <View>
             <TouchableOpacity
               onPress={handleSaveToProfile}
@@ -694,14 +841,6 @@ export default function HomeScreen() {
   // Camera View
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>
-          Nutra<Text style={styles.headerTitleGreen}>Smart</Text>
-        </Text>
-      </View>
-
-      {/* Camera */}
       <CameraView ref={cameraRef} style={styles.camera} facing={facing}>
         <View style={styles.cameraOverlay}>
           {/* Top Controls */}
@@ -775,6 +914,113 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  // Scanning Animation Styles
+  scanningOverlay: {
+    flex: 1,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  scanningContainer: {
+    width: SCREEN_WIDTH * 0.85,
+    height: SCREEN_HEIGHT * 0.6,
+    position: "relative",
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  scanningImage: {
+    width: "100%",
+    height: "100%",
+    resizeMode: "cover",
+  },
+  scanCornerTL: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: 40,
+    height: 40,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderColor: "#10b981",
+  },
+  scanCornerTR: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 40,
+    height: 40,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderColor: "#10b981",
+  },
+  scanCornerBL: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    width: 40,
+    height: 40,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderColor: "#10b981",
+  },
+  scanCornerBR: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 40,
+    height: 40,
+    borderBottomWidth: 4,
+    borderRightWidth: 4,
+    borderColor: "#10b981",
+  },
+  scanLine: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: "#10b981",
+    shadowColor: "#10b981",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 10,
+  },
+  gridOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  gridLineHorizontal: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: 1,
+    backgroundColor: "rgba(16, 185, 129, 0.15)",
+  },
+  gridLineVertical: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    width: 1,
+    backgroundColor: "rgba(16, 185, 129, 0.15)",
+  },
+  scanningTextContainer: {
+    marginTop: 32,
+    alignItems: "center",
+    gap: 8,
+  },
+  scanningText: {
+    color: "#ffff",
+    fontSize: 18,
+    fontWeight: "600",
+    marginTop: 8,
+  },
+  scanningSubtext: {
+    color: "#6b7280",
+    fontSize: 14,
   },
   // Preview Screen Styles
   previewScreenContainer: {
@@ -891,25 +1137,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
-  header: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
-    paddingTop: 60,
-    paddingBottom: 20,
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.3)",
-  },
-  headerTitle: {
-    fontSize: 32,
-    fontWeight: "600",
-    color: "#fff",
-  },
-  headerTitleGreen: {
-    color: "#10b981",
-  },
   camera: {
     flex: 1,
   },
@@ -977,71 +1204,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
-  },
-  previewContainer: {
-    position: "absolute",
-    bottom: 150,
-    left: 0,
-    right: 0,
-    height: 100,
-    paddingHorizontal: 10,
-  },
-  previewImageContainer: {
-    width: 80,
-    height: 80,
-    marginHorizontal: 5,
-    borderRadius: 10,
-    overflow: "hidden",
-    position: "relative",
-  },
-  previewImage: {
-    width: "100%",
-    height: "100%",
-  },
-  uploadingOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  removeButton: {
-    position: "absolute",
-    top: 5,
-    right: 5,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "rgba(0,0,0,0.7)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  analyzeContainer: {
-    position: "absolute",
-    bottom: 20,
-    left: 20,
-    right: 20,
-  },
-  analyzeButton: {
-    backgroundColor: "#10b981",
-    paddingVertical: 16,
-    borderRadius: 12,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8,
-  },
-  analyzeButtonDisabled: {
-    opacity: 0.7,
-  },
-  analyzeButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
   },
   // Results styles
   resultsContainer: {

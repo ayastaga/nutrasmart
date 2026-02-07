@@ -1414,6 +1414,8 @@ export default function ProfileScreen() {
           >
             Track your nutritional intake and progress
           </Text>
+          {/* 
+          Timezone picker to test out if different timezones work
           <TouchableOpacity
             onPress={() => setShowTimezonePicker(true)}
             className={`mt-3 p-3 rounded-lg flex-row items-center justify-between ${isDark ? "bg-gray-800" : "bg-gray-100"}`}
@@ -1429,6 +1431,7 @@ export default function ProfileScreen() {
             </View>
             <ChevronDown size={16} color={isDark ? "#9ca3af" : "#6b7280"} />
           </TouchableOpacity>
+          */}
         </AnimatedCard>
 
         {/* Period Selector */}

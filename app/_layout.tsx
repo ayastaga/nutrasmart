@@ -115,12 +115,12 @@ function RootNavigator() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const [loaded] = useFonts({
+  const [fontsLoaded] = useFonts({
     PPNeueMontreal: require("../assets/fonts/ppneuemontreal-medium.otf"),
   });
 
-  if (!loaded) {
-    // Async font loading only occurs in development.
+  // Don't render anything until fonts are loaded
+  if (!fontsLoaded) {
     return null;
   }
 
