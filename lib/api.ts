@@ -1,5 +1,5 @@
 // lib/api.ts
-import { supabase } from "./supabase.web";
+import { supabase } from "./supabase";
 import * as FileSystem from "expo-file-system/legacy";
 
 export interface NutritionData {

@@ -1,5 +1,5 @@
-// sign-out-button.tsx
-import { supabase } from "../../lib/supabase.web";
+// sign-out-button.tsx`
+import { supabase } from "../../lib/supabase";
 import React from "react";
 import { Button } from "react-native";
 

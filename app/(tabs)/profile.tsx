@@ -17,7 +17,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import { useAuthContext } from "@/hooks/use-auth-context";
-import { supabase } from "@/lib/supabase.web";
+import { supabase } from "@/lib/supabase";
 import {
   User,
   Mail,

@@ -14,9 +14,10 @@ import { Stack, router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as QueryParams from "expo-auth-session/build/QueryParams";
 import * as Linking from "expo-linking";
-import { supabase } from "@/lib/supabase.web";
+import { supabase } from "@/lib/supabase";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
+import GoogleSignInButton from "../components/social-auth-buttons/google/google-sign-in-button";
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -139,16 +140,7 @@ export default function LoginScreen() {
             </View>
 
             {/* Google Login */}
-            <TouchableOpacity
-              onPress={onLoginWithGoogle}
-              activeOpacity={0.7}
-              className="flex-row items-center justify-center rounded-2xl border border-gray-200 py-4 bg-white"
-            >
-              {/* If you use Lucide or Ionicons, add a Google icon here */}
-              <Text className="text-gray-700 font-bold text-base">
-                Continue with Google
-              </Text>
-            </TouchableOpacity>
+            <GoogleSignInButton />
 
             {/* Footer */}
             <View className="flex-row justify-center mt-auto py-6">

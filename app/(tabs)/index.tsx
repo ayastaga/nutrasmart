@@ -14,7 +14,7 @@ import {
   Alert,
   TextInput,
 } from "react-native";
-import { supabase } from "../../lib/supabase.web";
+import { supabase } from "../../lib/supabase";
 import { useAuthContext } from "@/hooks/use-auth-context";
 import { useTimezoneStore, COMMON_TIMEZONES } from "@/hooks/use-timezone";
 import {

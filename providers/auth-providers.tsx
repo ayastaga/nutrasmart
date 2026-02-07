@@ -1,6 +1,6 @@
 // auth-providers.ts
 import { AuthContext } from "@/hooks/use-auth-context";
-import { supabase } from "../lib/supabase.web";
+import { supabase } from "../lib/supabase";
 import type { Session } from "@supabase/supabase-js";
 import { PropsWithChildren, useEffect, useState } from "react";
 
